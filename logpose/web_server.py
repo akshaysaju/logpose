@@ -63,6 +63,11 @@ logger.info(
     _collection.count(),
 )
 
+# Runtime corpus dirs added via /api/add-corpus or /api/upload (not in .env)
+_extra_corpus_dirs: list[Path] = []
+_uploads_dir: Path = settings.chroma_dir.parent / "uploads"
+_uploads_dir.mkdir(parents=True, exist_ok=True)
+
 # ── Single shared event loop for all async work ───────────────────────────────
 # Flask uses a thread pool; each thread is a different OS thread.  asyncio
 # primitives (Semaphore, httpx.AsyncClient) bind to the loop they're first
@@ -107,7 +112,7 @@ def api_stats():
     try:
         total_chunks = _collection.count()
         base = {
-            "corpus_dirs": [str(d) for d in settings.corpus_dirs],
+            "corpus_dirs": [str(d) for d in settings.corpus_dirs + _extra_corpus_dirs],
             "embed_model": settings.embed_model,
             "reranker_enabled": settings.enable_reranker,
             "reranker_model": settings.reranker_model,
@@ -437,17 +442,19 @@ def api_status():
 _index_job: dict = {"running": False, "message": "idle", "files": 0, "indexed": 0, "failed": 0}
 
 
-def _run_index():
+def _run_index_dirs(dirs: list):
+    """Index a specific list of directories (used by add-corpus, upload, and full re-index)."""
     from logpose.indexer import FileIndexer  # local import avoids circular on startup
     indexer = FileIndexer(settings, _collection, _bm25)
-    _index_job.update({"running": True, "message": "scanning corpus…", "files": 0, "indexed": 0, "failed": 0})
+    _index_job.update({"running": True, "message": "scanning…", "files": 0, "indexed": 0, "failed": 0})
     try:
         total_indexed = 0
         total_files = 0
         total_failed = 0
-        for corp_dir in settings.corpus_dirs:
-            _index_job["message"] = f"indexing {corp_dir.name}…"
-            result = _run_async(indexer.index_directory(corp_dir))
+        for corp_dir in dirs:
+            p = Path(corp_dir)
+            _index_job["message"] = f"indexing {p.name}…"
+            result = _run_async(indexer.index_directory(p))
             total_files += result.get("files", 0)
             total_indexed += result.get("indexed", 0)
             total_failed += result.get("failed", 0)
@@ -464,6 +471,10 @@ def _run_index():
         logger.exception("Index job failed")
 
 
+def _run_index():
+    _run_index_dirs(settings.corpus_dirs + _extra_corpus_dirs)
+
+
 @app.route("/api/index", methods=["POST", "OPTIONS"])
 def api_index():
     if request.method == "OPTIONS":
@@ -478,6 +489,63 @@ def api_index():
 @app.route("/api/index-status")
 def api_index_status():
     return jsonify(_index_job)
+
+
+# ── /api/add-corpus  (add a local folder path at runtime) ─────────────────────
+@app.route("/api/add-corpus", methods=["POST", "OPTIONS"])
+def api_add_corpus():
+    if request.method == "OPTIONS":
+        return "", 204
+    data = request.get_json(silent=True) or {}
+    path_str = (data.get("path") or "").strip()
+    if not path_str:
+        return jsonify({"ok": False, "error": "path required"}), 400
+    p = Path(path_str).expanduser().resolve()
+    if not p.exists():
+        return jsonify({"ok": False, "error": f"Path not found: {p}"}), 404
+    if not p.is_dir():
+        # single file — add parent dir, index just the file
+        target = p.parent
+    else:
+        target = p
+    all_dirs = settings.corpus_dirs + _extra_corpus_dirs
+    if target not in all_dirs:
+        _extra_corpus_dirs.append(target)
+    if _index_job["running"]:
+        return jsonify({"ok": False, "running": True, "message": "Index job already running."}), 409
+    t = threading.Thread(target=_run_index_dirs, args=([target],), daemon=True)
+    t.start()
+    return jsonify({"ok": True, "running": True, "path": str(target), "message": f"Indexing {target.name}…"})
+
+
+# ── /api/upload  (browser file / folder upload) ───────────────────────────────
+@app.route("/api/upload", methods=["POST", "OPTIONS"])
+def api_upload():
+    if request.method == "OPTIONS":
+        return "", 204
+    files = request.files.getlist("files")
+    if not files:
+        return jsonify({"ok": False, "error": "no files provided"}), 400
+    saved = 0
+    for f in files:
+        if not f.filename:
+            continue
+        # webkitdirectory sends relative paths like "folder/sub/file.pdf"
+        # preserve structure inside _uploads_dir
+        safe_rel = Path(f.filename)
+        dest = _uploads_dir / safe_rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        f.save(dest)
+        saved += 1
+    if saved == 0:
+        return jsonify({"ok": False, "error": "no files saved"}), 400
+    if _uploads_dir not in settings.corpus_dirs and _uploads_dir not in _extra_corpus_dirs:
+        _extra_corpus_dirs.append(_uploads_dir)
+    if _index_job["running"]:
+        return jsonify({"ok": False, "running": True, "message": "Index job already running."}), 409
+    t = threading.Thread(target=_run_index_dirs, args=([_uploads_dir],), daemon=True)
+    t.start()
+    return jsonify({"ok": True, "running": True, "saved": saved, "message": f"Uploaded {saved} files, indexing…"})
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

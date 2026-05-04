@@ -155,6 +155,10 @@ if (!document.getElementById('lp-styles')) {
     .lp-link{color:${LP.fg};text-decoration:none;border-bottom:1px solid ${LP.rule2};
       padding-bottom:1px;transition:border-color 200ms ease-out}
     .lp-link:hover{border-color:${LP.amber}}
+    @keyframes lp-progress-indeterminate{
+      0%{transform:translateX(-100%);width:35%}
+      50%{transform:translateX(150%);width:45%}
+      100%{transform:translateX(300%);width:35%}}
   `;
   document.head.appendChild(s);
 }
@@ -221,8 +225,10 @@ function fmtAgo(iso) {
 }
 const StatsCtx = React.createContext({});
 const StatsRefreshCtx = React.createContext(() => {});
+const NavCtx = React.createContext(() => {});
 function useStats() { return React.useContext(StatsCtx); }
 function useRefreshStats() { return React.useContext(StatsRefreshCtx); }
+function useNav() { return React.useContext(NavCtx); }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared chrome
@@ -1481,60 +1487,272 @@ function Settings() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Empty state
+// Empty state / Onboarding — fully functional
 // ─────────────────────────────────────────────────────────────────────────────
 function EmptyState() {
+  const navigate = useNav();
+  const fetchStats = useRefreshStats();
+  // phase: idle | uploading | indexing | done | error
+  const [phase, setPhase] = React.useState("idle");
+  const [status, setStatus] = React.useState("");
+  const [progress, setProgress] = React.useState({ files: 0, indexed: 0 });
+  const [pathVal, setPathVal] = React.useState("");
+  const [dragOver, setDragOver] = React.useState(false);
+  const fileInputRef = React.useRef(null);
+  const folderInputRef = React.useRef(null);
+  const pollRef = React.useRef(null);
+
+  const stopPolling = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+
+  const startPolling = () => {
+    stopPolling();
+    pollRef.current = setInterval(() => {
+      fetch(`${API_BASE}/api/index-status`)
+        .then(r => r.json())
+        .then(d => {
+          setStatus(d.message || "");
+          setProgress({ files: d.files || 0, indexed: d.indexed || 0 });
+          if (!d.running) {
+            stopPolling();
+            fetchStats();
+            if ((d.message || "").startsWith("Error")) {
+              setPhase("error");
+            } else {
+              setPhase("done");
+              setTimeout(() => navigate("search"), 1800);
+            }
+          }
+        }).catch(() => {});
+    }, 800);
+  };
+
+  React.useEffect(() => stopPolling, []);
+
+  // ── index a local path ────────────────────────────────────────────────────
+  const indexPath = () => {
+    const p = pathVal.trim();
+    if (!p) return;
+    setPhase("indexing"); setStatus("Starting…");
+    fetch(`${API_BASE}/api/add-corpus`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: p }),
+    }).then(r => r.json()).then(d => {
+      if (d.ok) { setStatus(d.message); startPolling(); }
+      else { setPhase("error"); setStatus(d.error || "Failed to add path"); }
+    }).catch(() => { setPhase("error"); setStatus("Network error"); });
+  };
+
+  // ── upload files ──────────────────────────────────────────────────────────
+  const uploadFiles = (fileList) => {
+    const files = Array.from(fileList).filter(f => f.size > 0);
+    if (!files.length) return;
+    setPhase("uploading"); setStatus(`Uploading ${files.length} file${files.length > 1 ? "s" : ""}…`);
+    const fd = new FormData();
+    files.forEach(f => fd.append("files", f, f.webkitRelativePath || f.name));
+    fetch(`${API_BASE}/api/upload`, { method: "POST", body: fd })
+      .then(r => r.json())
+      .then(d => {
+        if (d.ok) { setPhase("indexing"); setStatus(d.message); startPolling(); }
+        else { setPhase("error"); setStatus(d.error || "Upload failed"); }
+      }).catch(() => { setPhase("error"); setStatus("Upload error"); });
+  };
+
+  // ── drag & drop ───────────────────────────────────────────────────────────
+  const onDragOver = (e) => { e.preventDefault(); setDragOver(true); };
+  const onDragLeave = () => setDragOver(false);
+  const onDrop = (e) => {
+    e.preventDefault(); setDragOver(false);
+    const items = e.dataTransfer.items;
+    const files = [];
+    // try webkitGetAsEntry for folders
+    if (items && items.length > 0 && items[0].webkitGetAsEntry) {
+      const traverseEntry = (entry, done) => {
+        if (entry.isFile) {
+          entry.file(f => { files.push(f); done(); });
+        } else if (entry.isDirectory) {
+          const reader = entry.createReader();
+          const readAll = () => reader.readEntries(entries => {
+            if (!entries.length) { done(); return; }
+            let pending = entries.length;
+            const check = () => { if (--pending === 0) done(); };
+            entries.forEach(en => traverseEntry(en, check));
+            readAll();
+          });
+          readAll();
+        } else done();
+      };
+      let pending = items.length;
+      const check = () => { if (--pending === 0 && files.length > 0) uploadFiles(files); };
+      for (let i = 0; i < items.length; i++) {
+        const entry = items[i].webkitGetAsEntry();
+        if (entry) traverseEntry(entry, check);
+        else check();
+      }
+    } else {
+      uploadFiles(e.dataTransfer.files);
+    }
+  };
+
+  // ── render helpers ────────────────────────────────────────────────────────
+  const isActive = phase !== "idle" && phase !== "error";
+
+  const dropBorder = dragOver ? `2px dashed ${LP.amber}` : `2px dashed ${LP.amberRule}`;
+  const dropBg = dragOver ? "rgba(255,159,28,0.08)" : "rgba(255,159,28,0.03)";
+
+  // Indexing progress bar width
+  const pct = progress.files > 0 ? Math.min(100, Math.round((progress.indexed / progress.files) * 100)) : 0;
+
   return (
     <div className="lp" style={{ position: "relative", width: "100%", flex: 1, overflow: "hidden" }}>
-      <div style={{ position: "absolute", inset: "0 0 0 0", display: "flex", flexDirection: "column",
+      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column",
         alignItems: "center", justifyContent: "center", padding: "0 80px" }}>
         <div className="lp-grid" style={{ position: "absolute", inset: 0, opacity: 0.18 }}/>
         <div className="lp-radial-amber"/>
-        <div style={{ position: "relative", textAlign: "center" }}>
-          <div className="lp-eyebrow" style={{ marginBottom: 24 }}>● No corpus indexed</div>
-          <h1 className="lp-h1" style={{ fontSize: 56, marginBottom: 18 }}>
-            Point Logpose at a folder to begin.
-          </h1>
-          <p style={{ color: LP.muted, fontSize: 16, maxWidth: 540, margin: "0 auto 56px", lineHeight: 1.5 }}>
-            We'll scan it locally, chunk it, embed it via Ollama, and never send a byte off this machine.
-          </p>
-          <div style={{ width: 720, margin: "0 auto", padding: "56px 40px", border: `2px dashed ${LP.amber}`,
-            borderRadius: 8, background: "rgba(255,159,28,0.04)", position: "relative",
-            display: "flex", flexDirection: "column", alignItems: "center", gap: 18 }}>
-            <div style={{ width: 56, height: 56, borderRadius: "50%", border: `1px solid ${LP.amber}`,
-              display: "flex", alignItems: "center", justifyContent: "center", color: LP.amber }}>
-              <Icon.upload size={22} stroke={LP.amber} />
+
+        <div style={{ position: "relative", textAlign: "center", width: "100%", maxWidth: 760 }}>
+
+          {/* ── IDLE ── */}
+          {phase === "idle" && (<>
+            <div className="lp-eyebrow" style={{ marginBottom: 24 }}>● No corpus indexed</div>
+            <h1 className="lp-h1" style={{ fontSize: 52, marginBottom: 16 }}>
+              Point Logpose at your files.
+            </h1>
+            <p style={{ color: LP.muted, fontSize: 15, maxWidth: 500, margin: "0 auto 48px", lineHeight: 1.6 }}>
+              Drop files or a folder, or paste a local path. Chunked, embedded via Ollama — never leaves this machine.
+            </p>
+
+            {/* Drop zone */}
+            <div
+              onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
+              onClick={() => folderInputRef.current && folderInputRef.current.click()}
+              style={{ width: "100%", padding: "48px 40px", border: dropBorder, borderRadius: 10,
+                background: dropBg, cursor: "pointer", transition: "border 0.15s, background 0.15s",
+                display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
+              <div style={{ width: 52, height: 52, borderRadius: "50%",
+                border: `1px solid ${dragOver ? LP.amber : LP.amberRule}`,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: dragOver ? LP.amberDim : "transparent",
+                transition: "all 0.15s" }}>
+                <Icon.upload size={20} stroke={LP.amber}/>
+              </div>
+              <div style={{ fontSize: 17, fontWeight: 600, letterSpacing: "-0.01em" }}>
+                {dragOver ? "Release to index" : "Drop files or folder here"}
+              </div>
+              <div style={{ fontSize: 12, color: LP.muted, fontFamily: LP.mono }}>
+                PDF · DOCX · MD · TXT · code · EPUB · PNG/JPG via OCR
+              </div>
+              <div style={{ display: "flex", gap: 10, marginTop: 6 }}
+                onClick={e => e.stopPropagation()}>
+                <button className="lp-cta-amber"
+                  onClick={() => folderInputRef.current && folderInputRef.current.click()}>
+                  Choose folder…
+                </button>
+                <button className="lp-cta-ghost"
+                  onClick={() => fileInputRef.current && fileInputRef.current.click()}>
+                  Choose files…
+                </button>
+              </div>
             </div>
-            <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: "-0.012em" }}>
-              Drop a folder here
+
+            {/* Hidden file inputs */}
+            <input ref={folderInputRef} type="file" multiple webkitdirectory="" mozdirectory=""
+              style={{ display: "none" }}
+              onChange={e => uploadFiles(e.target.files)}/>
+            <input ref={fileInputRef} type="file" multiple
+              style={{ display: "none" }}
+              onChange={e => uploadFiles(e.target.files)}/>
+
+            {/* Path input */}
+            <div style={{ marginTop: 28, color: LP.muted, fontSize: 13 }}>
+              Or paste a local path (folder or file):
             </div>
-            <div style={{ fontSize: 13, color: LP.muted, fontFamily: LP.mono }}>
-              PDF · DOCX · XLSX · code · MD · HTML · EPUB · PNG/JPG via OCR
-            </div>
-            <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
-              <button className="lp-cta-amber">Choose folder…</button>
-              <button className="lp-cta-ghost">Use a sample corpus</button>
-            </div>
-          </div>
-          <div style={{ marginTop: 36, color: LP.muted, fontSize: 13 }}>
-            Or paste a path.
-          </div>
-          <div style={{ width: 540, margin: "12px auto 0", display: "flex", gap: 8 }}>
-            <div style={{ flex: 1, position: "relative" }}>
-              <input className="lp-input lp-mono"
+            <div style={{ margin: "10px auto 0", display: "flex", gap: 8, maxWidth: 560 }}>
+              <input className="lp-input lp-mono" value={pathVal}
+                onChange={e => setPathVal(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && indexPath()}
                 placeholder="/Users/you/Documents"
-                style={{ paddingLeft: 14, fontSize: 13, letterSpacing: 0 }}/>
+                style={{ flex: 1, paddingLeft: 14, fontSize: 13, letterSpacing: 0 }}/>
+              <button className="lp-cta-amber" style={{ height: 44, flexShrink: 0 }}
+                onClick={indexPath}>Index</button>
             </div>
-            <button className="lp-cta-ghost" style={{ height: 44 }}>Index</button>
-          </div>
-          <div style={{ marginTop: 56, display: "flex", justifyContent: "center", gap: 28,
-            fontSize: 11, color: LP.dim, fontFamily: LP.mono, letterSpacing: 0.12, textTransform: "uppercase" }}>
-            <span><Icon.shield size={11} sw={1.4}/> &nbsp;&nbsp;Files never leave this machine</span>
-            <span>·</span>
-            <span><Icon.cpu size={11}/> &nbsp;&nbsp;Embeddings run on Ollama</span>
-            <span>·</span>
-            <span>Ctrl+Z to undo any time</span>
-          </div>
+
+            <div style={{ marginTop: 40, display: "flex", justifyContent: "center", gap: 24,
+              fontSize: 11, color: LP.dim, fontFamily: LP.mono, letterSpacing: 0.1, textTransform: "uppercase" }}>
+              <span><Icon.shield size={11} sw={1.4}/>&nbsp;&nbsp;Files never leave this machine</span>
+              <span>·</span>
+              <span><Icon.cpu size={11}/>&nbsp;&nbsp;Embeddings via Ollama</span>
+            </div>
+          </>)}
+
+          {/* ── UPLOADING ── */}
+          {phase === "uploading" && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 24 }}>
+              <div style={{ width: 64, height: 64, borderRadius: "50%",
+                border: `2px solid ${LP.amberRule}`, borderTopColor: LP.amber,
+                animation: "lp-spin 0.8s linear infinite" }}/>
+              <div style={{ fontSize: 18, fontWeight: 600 }}>{status}</div>
+              <div style={{ fontSize: 13, color: LP.muted }}>Saving to index…</div>
+            </div>
+          )}
+
+          {/* ── INDEXING ── */}
+          {phase === "indexing" && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 24, width: "100%" }}>
+              <div style={{ width: 52, height: 52, borderRadius: "50%",
+                border: `2px solid ${LP.amberRule}`, borderTopColor: LP.amber,
+                animation: "lp-spin 0.8s linear infinite" }}/>
+              <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: "-0.01em" }}>Indexing…</div>
+              <div style={{ width: "100%", height: 4, background: LP.rule2, borderRadius: 2, overflow: "hidden" }}>
+                <div style={{ height: "100%", background: LP.amber, borderRadius: 2,
+                  width: progress.files > 0 ? `${pct}%` : "30%",
+                  transition: "width 0.5s ease",
+                  animation: progress.files === 0 ? "lp-progress-indeterminate 1.4s ease infinite" : "none" }}/>
+              </div>
+              <div style={{ fontSize: 13, color: LP.muted, fontFamily: LP.mono }}>{status}</div>
+              {progress.files > 0 && (
+                <div style={{ fontSize: 12, color: LP.dim, fontFamily: LP.mono }}>
+                  {progress.indexed} / {progress.files} files
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── DONE ── */}
+          {phase === "done" && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 20 }}>
+              <div style={{ width: 64, height: 64, borderRadius: "50%",
+                border: `2px solid ${LP.amber}`, background: LP.amberDim,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 28 }}>✓</div>
+              <div style={{ fontSize: 22, fontWeight: 600, color: LP.amber }}>Ready</div>
+              <div style={{ fontSize: 15, color: LP.muted }}>{status}</div>
+              <div style={{ fontSize: 13, color: LP.dim, fontFamily: LP.mono }}>
+                Opening search…
+              </div>
+              <button className="lp-cta-amber" style={{ marginTop: 8 }}
+                onClick={() => navigate("search")}>
+                Search now →
+              </button>
+            </div>
+          )}
+
+          {/* ── ERROR ── */}
+          {phase === "error" && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 20 }}>
+              <div style={{ width: 64, height: 64, borderRadius: "50%",
+                border: `1px solid #FF4444`, background: "rgba(255,68,68,0.08)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 26, color: "#FF4444" }}>✕</div>
+              <div style={{ fontSize: 18, fontWeight: 600, color: "#FF4444" }}>Indexing failed</div>
+              <div style={{ fontSize: 13, color: LP.muted, fontFamily: LP.mono, maxWidth: 480 }}>{status}</div>
+              <button className="lp-cta-ghost" style={{ marginTop: 8 }}
+                onClick={() => { setPhase("idle"); setStatus(""); setPathVal(""); }}>
+                Try again
+              </button>
+            </div>
+          )}
+
         </div>
       </div>
     </div>
@@ -1890,20 +2108,27 @@ function App() {
   React.useEffect(() => { fetchStats(); }, [fetchStats]);
 
   const choose = (k) => { setTab(k); location.hash = k; };
-  const Render = SCREENS[tab].render;
+
+  // If no corpus indexed yet and user is on home, show onboarding instead
+  const hasCorpus = stats.total_chunks > 0;
+  const effectiveTab = (!hasCorpus && tab === "home") ? "empty" : tab;
+  const Render = SCREENS[effectiveTab] ? SCREENS[effectiveTab].render : SCREENS["home"].render;
+
   return (
     <StatsCtx.Provider value={stats}>
       <StatsRefreshCtx.Provider value={fetchStats}>
+      <NavCtx.Provider value={choose}>
       <div style={{ display: "flex", height: "100vh", width: "100vw",
         overflow: "hidden", background: LP.bg }}>
-        <SideNav tab={tab} onSelect={choose}/>
+        <SideNav tab={effectiveTab} onSelect={choose}/>
         {/* Content area — height:100% so child screens can fill with position:absolute */}
         <div style={{ flex: 1, minWidth: 0, height: "100vh",
-          overflow: tab === "search" ? "hidden" : "auto",
+          overflow: effectiveTab === "search" ? "hidden" : "auto",
           display: "flex", flexDirection: "column", position: "relative" }}>
           <Render/>
         </div>
       </div>
+      </NavCtx.Provider>
       </StatsRefreshCtx.Provider>
     </StatsCtx.Provider>
   );
