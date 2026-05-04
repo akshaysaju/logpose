@@ -1,0 +1,1915 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Logpose — local document intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; background: #0A0A0A; color: #F5F5F5;
+    font-family: Inter, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  body { overflow-x: auto; }
+  /* hide scrollbars in stage frame */
+  .lp-stage::-webkit-scrollbar { display: none; }
+  .lp-stage { scrollbar-width: none; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+
+<script type="text/babel" data-presets="env,react">
+// ─────────────────────────────────────────────────────────────────────────────
+// Visual system tokens (copy of the design package — do not change)
+// ─────────────────────────────────────────────────────────────────────────────
+const LP = {
+  bg: '#0A0A0A',
+  fg: '#F5F5F5',
+  muted: '#8A8A8A',
+  dim: '#5A5A5A',
+  rule: '#1F1F1F',
+  rule2: '#2A2A2A',
+  card: '#0F0F0F',
+  amber: '#FF9F1C',
+  amberDim: 'rgba(255,159,28,0.12)',
+  amberRule: 'rgba(255,159,28,0.35)',
+  ui: 'Inter, "SF Pro Text", -apple-system, system-ui, sans-serif',
+  mono: '"JetBrains Mono", "IBM Plex Mono", ui-monospace, Menlo, monospace',
+};
+
+// Auto-detect API base: works when served by Flask OR opened as file://
+const API_BASE = (typeof location !== 'undefined' && location.protocol === 'file:')
+  ? 'http://localhost:7892' : '';
+
+// One-time injected CSS (scoped under .lp)
+if (!document.getElementById('lp-styles')) {
+  const s = document.createElement('style');
+  s.id = 'lp-styles';
+  s.textContent = `
+    .lp,.lp *{box-sizing:border-box}
+    .lp{background:${LP.bg};color:${LP.fg};font-family:${LP.ui};
+        font-feature-settings:"ss01","cv11";letter-spacing:-0.005em;
+        -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+    .lp ::selection{background:${LP.amber};color:#0A0A0A}
+    .lp-mono{font-family:${LP.mono};font-feature-settings:"ss02"}
+    .lp-grid{background-image:
+      linear-gradient(${LP.rule} 1px, transparent 1px),
+      linear-gradient(90deg, ${LP.rule} 1px, transparent 1px);
+      background-size:64px 64px; background-position:-1px -1px;
+      opacity:.35}
+    .lp-hairline{height:1px;background:${LP.rule};width:100%}
+    .lp-vrule{width:1px;background:${LP.rule}}
+    .lp-pill{display:inline-flex;align-items:center;gap:8px;height:32px;
+      padding:0 14px;border-radius:999px;border:1px solid ${LP.rule2};
+      color:${LP.fg};font-size:13px;font-weight:500;background:transparent;
+      cursor:pointer;transition:all 200ms ease-out;letter-spacing:-0.01em;
+      white-space:nowrap}
+    .lp-pill:hover{border-color:#3a3a3a;background:#141414}
+    .lp-pill.active{border-color:${LP.amber};color:${LP.amber};background:${LP.amberDim}}
+    .lp-cta-primary{display:inline-flex;align-items:center;justify-content:center;
+      height:44px;padding:0 22px;border-radius:999px;background:${LP.fg};
+      color:#0A0A0A;font-size:14px;font-weight:600;letter-spacing:-0.01em;
+      border:none;cursor:pointer;transition:all 200ms ease-out}
+    .lp-cta-primary:hover{background:#fff;transform:translateY(-1px)}
+    .lp-cta-ghost{display:inline-flex;align-items:center;justify-content:center;
+      height:44px;padding:0 22px;border-radius:999px;background:transparent;
+      color:${LP.fg};font-size:14px;font-weight:500;letter-spacing:-0.01em;
+      border:1px solid ${LP.fg};cursor:pointer;transition:all 200ms ease-out}
+    .lp-cta-ghost:hover{background:${LP.fg};color:#0A0A0A}
+    .lp-cta-amber{display:inline-flex;align-items:center;justify-content:center;
+      height:44px;padding:0 22px;border-radius:999px;background:${LP.amber};
+      color:#0A0A0A;font-size:14px;font-weight:600;letter-spacing:-0.01em;
+      border:none;cursor:pointer;transition:all 200ms ease-out}
+    .lp-cta-amber:hover{filter:brightness(1.08)}
+    .lp-input{width:100%;height:44px;padding:0 14px;border-radius:4px;
+      background:#0E0E0E;border:1px solid ${LP.rule2};color:${LP.fg};
+      font-family:${LP.ui};font-size:14px;letter-spacing:-0.005em;
+      outline:none;transition:all 200ms ease-out}
+    .lp-input:focus{border-color:${LP.amber};box-shadow:0 0 0 3px ${LP.amberDim}}
+    .lp-input::placeholder{color:${LP.dim}}
+    .lp-card{background:transparent;border:1px solid ${LP.rule};border-radius:8px;
+      transition:all 200ms ease-out}
+    .lp-result-card{background:transparent;border:1px solid ${LP.rule};
+      border-radius:8px;padding:24px;cursor:pointer;
+      transition:border-color 200ms ease-out, background 200ms ease-out}
+    .lp-result-card:hover{border-color:${LP.amber};background:#0C0C0C}
+    .lp-result-card.active{border-color:${LP.amber};background:#0C0C0C}
+    .lp-cite-pill{display:inline-flex;align-items:center;gap:6px;height:22px;
+      padding:0 8px;border-radius:999px;border:1px solid ${LP.rule2};
+      font-family:${LP.mono};font-size:11px;color:${LP.muted};
+      letter-spacing:0;font-weight:500}
+    .lp-mark{color:${LP.amber};background:${LP.amberDim};padding:1px 3px;
+      border-radius:2px;font-weight:500}
+    .lp-row-btn{display:inline-flex;align-items:center;gap:6px;height:30px;
+      padding:0 12px;border-radius:999px;border:1px solid ${LP.rule2};
+      background:transparent;color:${LP.fg};font-size:12px;font-weight:500;
+      cursor:pointer;transition:all 200ms ease-out;letter-spacing:-0.005em}
+    .lp-row-btn:hover{border-color:#3a3a3a;background:#141414}
+    .lp-checkbox{width:16px;height:16px;border-radius:3px;border:1px solid ${LP.rule2};
+      display:inline-flex;align-items:center;justify-content:center;
+      transition:all 200ms ease-out}
+    .lp-checkbox.on{background:${LP.amber};border-color:${LP.amber};color:#0A0A0A}
+    .lp-toggle{position:relative;width:34px;height:20px;border-radius:999px;
+      background:${LP.rule2};transition:all 200ms ease-out;cursor:pointer}
+    .lp-toggle.on{background:${LP.amber}}
+    .lp-toggle::after{content:"";position:absolute;top:2px;left:2px;width:16px;
+      height:16px;border-radius:50%;background:${LP.fg};
+      transition:all 200ms ease-out}
+    .lp-toggle.on::after{left:16px;background:#0A0A0A}
+    .lp-eyebrow{font-family:${LP.mono};font-size:11px;letter-spacing:0.18em;
+      color:${LP.muted};text-transform:uppercase;font-weight:500}
+    .lp-h1{font-size:64px;font-weight:600;letter-spacing:-0.025em;line-height:1.02;
+      margin:0;text-wrap:balance}
+    .lp-h2{font-size:40px;font-weight:600;letter-spacing:-0.022em;line-height:1.05;
+      margin:0}
+    .lp-h3{font-size:22px;font-weight:600;letter-spacing:-0.015em;line-height:1.2;margin:0}
+    .lp-radial{position:absolute;inset:0;pointer-events:none;
+      background:radial-gradient(ellipse 720px 360px at 50% 32%,
+        rgba(255,255,255,0.05), transparent 70%)}
+    .lp-radial-amber{position:absolute;inset:0;pointer-events:none;
+      background:radial-gradient(ellipse 720px 360px at 50% 32%,
+        rgba(255,159,28,0.06), transparent 70%)}
+    .lp-livedot{width:6px;height:6px;border-radius:50%;background:#3FCF75;
+      box-shadow:0 0 0 0 rgba(63,207,117,0.6);animation:lp-pulse 2s ease-out infinite}
+    @keyframes lp-pulse{0%{box-shadow:0 0 0 0 rgba(63,207,117,0.6)}
+      80%{box-shadow:0 0 0 8px rgba(63,207,117,0)}
+      100%{box-shadow:0 0 0 0 rgba(63,207,117,0)}}
+    .lp-blink{animation:lp-blink 1.1s steps(2,end) infinite}
+    @keyframes lp-blink{50%{opacity:0}}
+    .lp-spin{animation:lp-spin 1.4s linear infinite}
+    @keyframes lp-spin{to{transform:rotate(360deg)}}
+    .lp-shimmer{position:relative;overflow:hidden}
+    .lp-shimmer::after{content:"";position:absolute;inset:0;
+      background:linear-gradient(90deg,transparent,rgba(255,159,28,0.12),transparent);
+      animation:lp-shimmer 2.4s ease-in-out infinite;transform:translateX(-100%)}
+    @keyframes lp-shimmer{50%,100%{transform:translateX(100%)}}
+    .lp-kbd{display:inline-flex;align-items:center;justify-content:center;
+      min-width:20px;height:20px;padding:0 5px;border-radius:4px;
+      background:#161616;border:1px solid ${LP.rule2};border-bottom-width:2px;
+      font-family:${LP.mono};font-size:11px;color:${LP.muted};font-weight:500}
+    .lp-link{color:${LP.fg};text-decoration:none;border-bottom:1px solid ${LP.rule2};
+      padding-bottom:1px;transition:border-color 200ms ease-out}
+    .lp-link:hover{border-color:${LP.amber}}
+  `;
+  document.head.appendChild(s);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Icons (1.25 stroke, monochrome)
+// ─────────────────────────────────────────────────────────────────────────────
+const I = ({ d, size = 16, fill, stroke = "currentColor", sw = 1.25, vb = "0 0 24 24", children }) => (
+  <svg width={size} height={size} viewBox={vb} fill={fill || "none"} stroke={stroke}
+    strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {children || <path d={d} />}
+  </svg>
+);
+const Icon = {
+  search: (p) => <I {...p}><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></I>,
+  arrowR: (p) => <I {...p}><path d="M5 12h14M13 5l7 7-7 7"/></I>,
+  filter: (p) => <I {...p}><path d="M3 5h18M6 12h12M10 19h4"/></I>,
+  close: (p) => <I {...p}><path d="M6 6l12 12M18 6L6 18"/></I>,
+  copy: (p) => <I {...p}><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></I>,
+  external: (p) => <I {...p}><path d="M15 3h6v6M10 14L21 3M19 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"/></I>,
+  message: (p) => <I {...p}><path d="M21 12a8 8 0 0 1-12.4 6.7L3 20l1.3-5.6A8 8 0 1 1 21 12z"/></I>,
+  pdf: (p) => <I {...p}><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h1.5a1.5 1.5 0 0 1 0 3H9zM14 13h2M14 16h2M14 13v3"/></I>,
+  doc: (p) => <I {...p}><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M8 13h8M8 17h6"/></I>,
+  code: (p) => <I {...p}><path d="m9 9-4 3 4 3M15 9l4 3-4 3M13 5l-2 14"/></I>,
+  sheet: (p) => <I {...p}><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16M15 4v16"/></I>,
+  image: (p) => <I {...p}><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="1.5"/><path d="m21 15-5-5L5 21"/></I>,
+  folder: (p) => <I {...p}><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></I>,
+  plus: (p) => <I {...p}><path d="M12 5v14M5 12h14"/></I>,
+  pause: (p) => <I {...p}><path d="M7 5v14M17 5v14"/></I>,
+  refresh: (p) => <I {...p}><path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5"/></I>,
+  check: (p) => <I {...p}><path d="m5 12 5 5L20 7"/></I>,
+  x: (p) => <I {...p}><path d="M6 6l12 12M18 6L6 18"/></I>,
+  upload: (p) => <I {...p}><path d="M12 16V4M5 11l7-7 7 7M4 20h16"/></I>,
+  chevR: (p) => <I {...p}><path d="m9 6 6 6-6 6"/></I>,
+  shield: (p) => <I {...p}><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/></I>,
+  cpu: (p) => <I {...p}><rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></I>,
+  zap: (p) => <I {...p}><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></I>,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Data helpers + Stats context
+// ─────────────────────────────────────────────────────────────────────────────
+function parseSnippet(raw) {
+  if (!raw) return [""];
+  const parts = [];
+  raw.split("@@").forEach((seg, i) => {
+    if (!seg) return;
+    if (i % 2 === 0) parts.push(seg);
+    else parts.push({ mark: seg });
+  });
+  return parts.length ? parts : [raw];
+}
+function fmtAgo(iso) {
+  if (!iso) return "—";
+  try {
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    return `${Math.floor(hrs / 24)}d ago`;
+  } catch(e) { return "—"; }
+}
+const StatsCtx = React.createContext({});
+const StatsRefreshCtx = React.createContext(() => {});
+function useStats() { return React.useContext(StatsCtx); }
+function useRefreshStats() { return React.useContext(StatsRefreshCtx); }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared chrome
+// ─────────────────────────────────────────────────────────────────────────────
+function FileTypeBadge({ kind = "doc", size = 36 }) {
+  const map = {
+    pdf: <Icon.pdf size={16}/>, docx: <Icon.doc size={16}/>, code: <Icon.code size={16}/>,
+    xlsx: <Icon.sheet size={16}/>, md: <Icon.doc size={16}/>, img: <Icon.image size={16}/>,
+    epub: <Icon.doc size={16}/>, html: <Icon.code size={16}/>,
+  };
+  return (
+    <div style={{ width: size, height: size, borderRadius: 6, border: `1px solid ${LP.rule}`,
+      display: "flex", alignItems: "center", justifyContent: "center", color: LP.fg,
+      flex: "0 0 auto", background: "#0C0C0C" }}>
+      {map[kind] || map.doc}
+    </div>
+  );
+}
+
+function StatusRow({ chunks, files, indexedAgo }) {
+  const stats = useStats();
+  const c = chunks ?? (stats.total_chunks != null ? stats.total_chunks.toLocaleString() : "…");
+  const f = files ?? (stats.total_files != null ? stats.total_files.toLocaleString() : "…");
+  const ago = indexedAgo ?? fmtAgo(stats.last_indexed);
+  return (
+    <div className="lp-mono" style={{ display: "flex", alignItems: "center", gap: 10,
+      fontSize: 12, color: LP.muted, letterSpacing: 0 }}>
+      <span className="lp-livedot" />
+      <span>{c} chunks across {f} files — last indexed {ago}</span>
+    </div>
+  );
+}
+
+function Logomark({ size = 22 }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="12" r="10" stroke={LP.fg} strokeWidth="1.25"/>
+        <circle cx="12" cy="12" r="5.5" stroke={LP.fg} strokeWidth="1.25"/>
+        <path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke={LP.fg} strokeWidth="1.25" strokeLinecap="round"/>
+        <circle cx="12" cy="12" r="1.5" fill={LP.amber}/>
+      </svg>
+      <span style={{ fontSize: 15, fontWeight: 600, letterSpacing: "-0.02em" }}>
+        logpose<span style={{ color: LP.amber }}>.</span>
+      </span>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hero — Take A (Spotlight, recommended)
+// ─────────────────────────────────────────────────────────────────────────────
+function HeroA() {
+  const [filter, setFilter] = React.useState("All files");
+  const inputRef = React.useRef(null);
+  const filterTypeMap = {
+    "PDFs only": "PDF", "Code only": "Code", "Spreadsheets": "XLSX", "All files": null,
+  };
+  const doSearch = () => {
+    const q = inputRef.current?.value?.trim();
+    if (!q) return;
+    const ft = filterTypeMap[filter];
+    const hash = ft ? `search?q=${encodeURIComponent(q)}&ft=${ft}` : `search?q=${encodeURIComponent(q)}`;
+    location.hash = hash;
+  };
+  return (
+    <div className="lp" style={{ position: "relative", width: "100%", flex: 1, overflow: "hidden" }}>
+      <div className="lp-grid" style={{ position: "absolute", inset: 0, opacity: 0.18 }} />
+      <div className="lp-radial" />
+      {/* Top bar — no Logomark (sidebar handles navigation) */}
+      <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 56,
+        display: "flex", alignItems: "center", justifyContent: "flex-end",
+        padding: "0 36px", borderBottom: `1px solid ${LP.rule}` }}>
+        <div style={{ display: "flex", gap: 24, alignItems: "center", fontSize: 12, color: LP.muted }}>
+          <a className="lp-link" style={{ color: LP.muted, borderColor: "transparent" }}>Docs</a>
+          <a className="lp-link" style={{ color: LP.muted, borderColor: "transparent" }}>How it works</a>
+          <a className="lp-link" style={{ color: LP.muted, borderColor: "transparent" }}>Changelog</a>
+          <span style={{ width: 1, height: 14, background: LP.rule }} />
+          <span className="lp-mono" style={{ fontSize: 10, color: LP.dim }}>v0.3.1</span>
+        </div>
+      </div>
+      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center", padding: "0 80px" }}>
+        <div className="lp-eyebrow" style={{ marginBottom: 28 }}>Local · Private · Citation-first</div>
+        <h1 className="lp-h1" style={{ textAlign: "center", maxWidth: 880, marginBottom: 14, fontSize: 68 }}>
+          Search your private documents<br/>the way you search the web.
+        </h1>
+        <p style={{ color: LP.muted, fontSize: 17, textAlign: "center", maxWidth: 560,
+          margin: "0 0 44px", lineHeight: 1.45 }}>
+          Hybrid retrieval. Precise citations. Zero data leaves the machine.
+        </p>
+        <div style={{ width: 720, position: "relative" }}>
+          <div style={{ position: "relative", height: 64, borderRadius: 12,
+            border: `1px solid ${LP.rule2}`, background: "rgba(14,14,14,0.7)",
+            backdropFilter: "blur(12px)", display: "flex", alignItems: "center",
+            padding: "0 22px", gap: 14 }}>
+            <Icon.search size={20} stroke={LP.muted} />
+            <input ref={inputRef}
+              style={{ flex: 1, fontSize: 17, color: LP.fg, background: "transparent",
+                border: "none", outline: "none", fontFamily: LP.ui, letterSpacing: "-0.01em" }}
+              placeholder="Search your documents…"
+              onKeyDown={e => e.key === "Enter" && doSearch()} />
+            <span className="lp-kbd" style={{ height: 24, minWidth: 24, fontSize: 12, cursor: "pointer" }}
+              onClick={doSearch}>↵</span>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 18, justifyContent: "center" }}>
+            {["All files", "PDFs only", "Code only", "Spreadsheets"].map(p => (
+              <button key={p} className={"lp-pill" + (filter === p ? " active" : "")}
+                onClick={() => setFilter(p)}>{p}</button>
+            ))}
+          </div>
+          <div style={{ display: "flex", justifyContent: "center", marginTop: 28 }}>
+            <StatusRow />
+          </div>
+        </div>
+        <div style={{ position: "absolute", bottom: 32, left: 0, right: 0, display: "flex",
+          justifyContent: "center", gap: 24, fontSize: 12, color: LP.dim }}>
+          <span>Runs on your CPU/GPU via Ollama</span>
+          <span>·</span>
+          <span>No telemetry, ever</span>
+          <span>·</span>
+          <span>All documents stay local</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hero — Take B (Editorial split with terminal proof)
+// ─────────────────────────────────────────────────────────────────────────────
+function HeroB() {
+  return (
+    <div className="lp" style={{ position: "relative", width: "100%", flex: 1, overflow: "hidden",
+      display: "grid", gridTemplateColumns: "1fr 1px 600px" }}>
+      <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 64,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "0 40px", borderBottom: `1px solid ${LP.rule}`, zIndex: 5 }}>
+        <span className="lp-mono" style={{ fontSize: 11, color: LP.muted, letterSpacing: 0.18, textTransform: "uppercase" }}>
+          Build 0.3.1 · macOS · Linux · Windows
+        </span>
+      </div>
+      <div style={{ padding: "150px 80px 80px", position: "relative" }}>
+        <div className="lp-eyebrow" style={{ marginBottom: 32 }}>
+          <span style={{ color: LP.amber }}>●</span>&nbsp;&nbsp;Local-first document intelligence
+        </div>
+        <h1 className="lp-h1" style={{ fontSize: 72, marginBottom: 28 }}>
+          Find anything<br/>
+          in <em style={{ fontStyle: "italic", fontWeight: 500 }}>everything</em><br/>
+          you've written.
+        </h1>
+        <p style={{ color: LP.muted, fontSize: 18, maxWidth: 460, lineHeight: 1.5, margin: "0 0 44px" }}>
+          Logpose indexes a folder of mixed documents and runs hybrid retrieval —
+          dense vectors plus BM25, fused and reranked — entirely on your machine.
+        </p>
+        <div style={{ display: "flex", gap: 12, marginBottom: 64 }}>
+          <button className="lp-cta-primary">
+            Download for macOS&nbsp;&nbsp;<Icon.arrowR size={14} stroke="#0A0A0A"/>
+          </button>
+          <button className="lp-cta-ghost">Read the docs</button>
+        </div>
+        <StatusRow />
+      </div>
+      <div className="lp-vrule" />
+      <div style={{ padding: "150px 60px 80px", display: "flex", flexDirection: "column", gap: 24 }}>
+        <HeroTerminal />
+      </div>
+    </div>
+  );
+}
+
+function HeroTerminal() {
+  const stats = useStats();
+  const c = stats.total_chunks != null ? stats.total_chunks.toLocaleString() : "…";
+  const f = stats.total_files != null ? stats.total_files.toLocaleString() : "…";
+  const model = stats.embed_model || "nomic-embed-text";
+  return (
+    <>
+      <div className="lp-eyebrow">Live demo · indexing this very folder</div>
+      <div className="lp-mono" style={{ fontSize: 13, lineHeight: 1.7, color: LP.muted }}>
+        <div style={{ color: LP.fg }}>$ logpose index ~/Documents</div>
+        <div>scanning… <span style={{ color: LP.fg }}>{f} files</span> found</div>
+        <div>chunking… {c} chunks</div>
+        <div>embedding via <span style={{ color: LP.fg }}>{model}</span></div>
+        <div style={{ color: LP.fg }}>✓ active and syncing</div>
+        <div style={{ marginTop: 14, color: LP.fg }}>$ logpose ask "loan principal amount"</div>
+        <div style={{ paddingLeft: 12, borderLeft: `2px solid ${LP.amber}`, paddingTop: 6, paddingBottom: 6 }}>
+          <div style={{ color: LP.fg }}>loan_agreement.docx <span style={{ color: LP.muted }}>· paragraph 3</span></div>
+          <div style={{ color: LP.muted, fontSize: 12 }}>"the principal <span className="lp-mark">amount due</span> is Rs. 5,00,000…"</div>
+          <div style={{ color: LP.dim, fontSize: 11, marginTop: 4 }}>score 0.94 · cited from line 18</div>
+        </div>
+        <div style={{ marginTop: 10, opacity: 0.6 }}>$ <span className="lp-blink">_</span></div>
+      </div>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hero — Take C (Quiet wordmark)
+// ─────────────────────────────────────────────────────────────────────────────
+function HeroCStats() {
+  const stats = useStats();
+  const c = stats.total_chunks != null ? stats.total_chunks.toLocaleString() : "…";
+  const f = stats.total_files != null ? stats.total_files.toLocaleString() : "…";
+  return (
+    <span style={{ fontFamily: LP.mono, fontSize: 11, color: LP.muted, letterSpacing: 0.1 }}>
+      {c} CHUNKS · {f} FILES
+    </span>
+  );
+}
+
+function HeroC() {
+  return (
+    <div className="lp" style={{ position: "relative", width: "100%", flex: 1, overflow: "hidden" }}>
+      <div className="lp-radial-amber" />
+      <div style={{ position: "absolute", left: 80, right: 80, top: 80, height: 1, background: LP.rule }} />
+      <div style={{ position: "absolute", left: 80, right: 80, bottom: 80, height: 1, background: LP.rule }} />
+      <div style={{ position: "absolute", top: 32, left: 80, right: 80, display: "flex",
+        justifyContent: "space-between", alignItems: "center" }}>
+        <span className="lp-mono" style={{ fontSize: 11, color: LP.muted, letterSpacing: 0.18, textTransform: "uppercase" }}>
+          v0.3.1
+        </span>
+      </div>
+      <div style={{ position: "absolute", left: 80, bottom: 32, display: "flex", gap: 24, fontSize: 12, color: LP.muted }}>
+        <span className="lp-mono" style={{ letterSpacing: 0.12, textTransform: "uppercase" }}>01 — Index</span>
+        <span className="lp-mono" style={{ letterSpacing: 0.12, textTransform: "uppercase", color: LP.amber }}>02 — Search</span>
+        <span className="lp-mono" style={{ letterSpacing: 0.12, textTransform: "uppercase" }}>03 — Cite</span>
+      </div>
+      <div style={{ position: "absolute", right: 80, bottom: 32, fontSize: 12, color: LP.muted, fontFamily: LP.mono, letterSpacing: 0.12, textTransform: "uppercase" }}>
+        ⌘K to focus
+      </div>
+      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center" }}>
+        <div className="lp-eyebrow" style={{ marginBottom: 56, color: LP.amber }}>● Local · Private · Citation-first</div>
+        <h1 style={{ fontSize: 168, fontWeight: 600, letterSpacing: "-0.045em", lineHeight: 0.92,
+          margin: 0, textAlign: "center" }}>
+          logpose<span style={{ color: LP.amber }}>.</span>
+        </h1>
+        <p style={{ color: LP.muted, fontSize: 16, marginTop: 24, marginBottom: 56, letterSpacing: "-0.005em" }}>
+          A local-first search engine for the documents you can't put in the cloud.
+        </p>
+        <div style={{ width: 720, height: 64, borderRadius: 12, border: `1px solid ${LP.fg}`,
+          display: "flex", alignItems: "center", padding: "0 22px", gap: 14, background: "transparent" }}>
+          <Icon.search size={20} stroke={LP.fg} />
+          <input 
+            placeholder="Search your documents…"
+            onKeyDown={e => {
+              if (e.key === "Enter" && e.target.value.trim()) {
+                location.hash = "search?q=" + encodeURIComponent(e.target.value.trim());
+              }
+            }}
+            style={{ flex: 1, fontSize: 17, color: LP.fg, background: "transparent", border: "none", outline: "none", fontFamily: LP.ui }} 
+          />
+          <HeroCStats />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Search results + drawer
+// ─────────────────────────────────────────────────────────────────────────────
+
+
+function Snippet({ parts, mono }) {
+  return (
+    <div className={mono ? "lp-mono" : ""} style={{
+      fontSize: mono ? 13 : 14.5, color: LP.fg, lineHeight: mono ? 1.7 : 1.55,
+      whiteSpace: mono ? "pre-wrap" : "normal", letterSpacing: mono ? 0 : "-0.005em" }}>
+      {parts.map((p, i) => typeof p === "string"
+        ? <span key={i}>{p}</span>
+        : <span key={i} className="lp-mark">{p.mark}</span>)}
+    </div>
+  );
+}
+
+function ResultCard({ r, active, onOpen, onAskFollowup }) {
+  const [copied, setCopied] = React.useState(false);
+  const [opened, setOpened] = React.useState(false);
+  const openFile = (e) => {
+    e.stopPropagation();
+    fetch(`${API_BASE}/api/open-file`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path: r.path}),
+    }).then(() => { setOpened(true); setTimeout(() => setOpened(false), 1500); }).catch(() => {});
+  };
+  const copyPath = (e) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(r.path)
+      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); })
+      .catch(() => {});
+  };
+  const followUp = (e) => {
+    e.stopPropagation();
+    onOpen();
+    if (onAskFollowup) onAskFollowup(r);
+  };
+  return (
+    <div className={"lp-result-card" + (active ? " active" : "")} onClick={onOpen}>
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+        <FileTypeBadge kind={r.kind} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
+            <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, letterSpacing: "-0.012em" }}>{r.file}</h3>
+            <span className="lp-cite-pill">{r.cite}</span>
+          </div>
+          <div className="lp-mono" style={{ fontSize: 12, color: LP.muted, marginBottom: 16, letterSpacing: 0 }}>
+            {r.path}
+            <span style={{ margin: "0 8px", color: LP.dim }}>·</span>
+            score {r.score.toFixed(2)}
+            <span style={{ margin: "0 8px", color: LP.dim }}>·</span>
+            modified {r.mod}
+          </div>
+          <Snippet parts={r.snippet} mono={r.kind === "code" || r.kind === "xlsx"} />
+          <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
+            <button className="lp-row-btn" onClick={openFile}><Icon.external size={12}/> {opened ? "Opened!" : "Open file"}</button>
+            <button className="lp-row-btn" onClick={copyPath}><Icon.copy size={12}/> {copied ? "Copied!" : "Copy path"}</button>
+            <button className="lp-row-btn" onClick={followUp}><Icon.message size={12}/> Ask follow-up</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FilterRail({ rerank, setRerank, activeTypes, setActiveTypes, activeFolder, setActiveFolder }) {
+  const stats = useStats();
+  const toggle = (t) => setActiveTypes(a => a.includes(t) ? a.filter(x => x !== t) : [...a, t]);
+
+  // Build file-type counts from real stats.file_types
+  const ft = stats.file_types || {};
+  const extMap = {
+    PDF: [".pdf"], DOCX: [".docx", ".doc"], Code: [".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".java", ".cpp", ".c"],
+    XLSX: [".xlsx", ".xls"], Markdown: [".md", ".markdown"], EPUB: [".epub"],
+  };
+  const countFor = (label) => extMap[label] ? extMap[label].reduce((s, e) => s + (ft[e] || 0), 0) || null : null;
+
+  // Real source folders from stats
+  const folders = ["All folders", ...(stats.sources || ["ICICI", "Finance", "code/ledger", "notes"])];
+
+  const Section = ({ title, children }) => (
+    <div style={{ marginBottom: 32 }}>
+      <div className="lp-eyebrow" style={{ marginBottom: 14, fontSize: 10 }}>{title}</div>
+      {children}
+    </div>
+  );
+  const Check = ({ label, on, onClick, count }) => (
+    <div onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0",
+      cursor: "pointer", color: on ? LP.fg : LP.muted, fontSize: 13, fontWeight: 500 }}>
+      <span className={"lp-checkbox" + (on ? " on" : "")}>
+        {on && <Icon.check size={11} stroke="#0A0A0A" sw={2}/>}
+      </span>
+      <span style={{ flex: 1 }}>{label}</span>
+      <span className="lp-mono" style={{ fontSize: 11, color: LP.dim }}>{count}</span>
+    </div>
+  );
+  const Radio = ({ label, on, onClick }) => (
+    <div onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0",
+      cursor: "pointer", color: on ? LP.fg : LP.muted, fontSize: 13, fontWeight: 500 }}>
+      <span style={{ width: 14, height: 14, borderRadius: "50%", border: `1px solid ${on ? LP.amber : LP.rule2}`,
+        display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+        {on && <span style={{ width: 6, height: 6, borderRadius: "50%", background: LP.amber }} />}
+      </span>
+      <span>{label}</span>
+    </div>
+  );
+  return (
+    <aside style={{ width: "100%" }}>
+      <Section title="File type">
+        {["PDF", "DOCX", "Code", "XLSX", "Markdown", "EPUB"].map(t => (
+          <Check key={t} label={t} on={activeTypes.includes(t)} onClick={() => toggle(t)} count={countFor(t)} />
+        ))}
+      </Section>
+      <Section title="Source folder">
+        {folders.map(f => (
+          <Radio key={f} label={f} on={activeFolder === f} onClick={() => setActiveFolder(f)} />
+        ))}
+      </Section>
+      <Section title="Date modified">
+        <div style={{ position: "relative", height: 40, marginTop: 4 }}>
+          <div style={{ position: "absolute", top: 18, left: 0, right: 0, height: 2, background: LP.rule }} />
+          <div style={{ position: "absolute", top: 18, left: "20%", width: "60%", height: 2, background: LP.amber }} />
+          <div style={{ position: "absolute", top: 12, left: "20%", width: 14, height: 14, borderRadius: "50%",
+            background: LP.bg, border: `2px solid ${LP.amber}`, transform: "translateX(-7px)" }} />
+          <div style={{ position: "absolute", top: 12, left: "80%", width: 14, height: 14, borderRadius: "50%",
+            background: LP.bg, border: `2px solid ${LP.amber}`, transform: "translateX(-7px)" }} />
+        </div>
+        <div className="lp-mono" style={{ display: "flex", justifyContent: "space-between",
+          fontSize: 11, color: LP.muted, marginTop: 4 }}>
+          <span>2024</span><span>last 90 days</span>
+        </div>
+      </Section>
+      <Section title="Retrieval">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 0" }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 500, color: LP.fg }}>Cross-encoder</div>
+            <div style={{ fontSize: 11, color: LP.muted, marginTop: 2 }}>Rerank top 50</div>
+          </div>
+          <div className={"lp-toggle" + (rerank ? " on" : "")} onClick={() => setRerank(v => !v)} />
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 0" }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 500, color: LP.fg }}>OCR</div>
+            <div style={{ fontSize: 11, color: LP.muted, marginTop: 2 }}>Scanned PDFs</div>
+          </div>
+          <div className="lp-toggle on" />
+        </div>
+      </Section>
+    </aside>
+  );
+}
+
+function SearchTopBar({ query, onSearch }) {
+  const [val, setVal] = React.useState(query || "");
+  React.useEffect(() => setVal(query || ""), [query]);
+  const submit = () => { const q = val.trim(); if (q && onSearch) onSearch(q); };
+  return (
+    <div style={{ flexShrink: 0, background: LP.bg, borderBottom: `1px solid ${LP.rule}`,
+      padding: "12px 24px", display: "flex", alignItems: "center", gap: 16, zIndex: 4 }}>
+      <div style={{ flex: 1, position: "relative", maxWidth: 640 }}>
+        <div style={{ height: 40, borderRadius: 6, border: `1px solid ${LP.rule2}`,
+          background: "#0E0E0E", display: "flex", alignItems: "center", padding: "0 12px", gap: 10 }}>
+          <Icon.search size={15} stroke={LP.muted} />
+          <input value={val} onChange={e => setVal(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && submit()}
+            placeholder="Search your documents…"
+            autoFocus
+            style={{ flex: 1, fontSize: 13, color: LP.fg, background: "transparent",
+              border: "none", outline: "none", fontFamily: LP.ui, letterSpacing: "-0.005em" }} />
+          <span style={{ display: "inline-flex", gap: 4, cursor: "pointer" }} onClick={submit}>
+            <span className="lp-kbd">↵</span>
+          </span>
+        </div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, fontSize: 11, color: LP.muted }}>
+        <StatusRow />
+      </div>
+    </div>
+  );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chat Panel — slide-in + fullscreen expand
+// ─────────────────────────────────────────────────────────────────────────────
+function ChatPanel({ result, onClose, expanded, onToggleExpand, onBackToPreview }) {
+  const [messages, setMessages] = React.useState([]);
+  const [input, setInput] = React.useState("");
+  const [asking, setAsking] = React.useState(false);
+  const bottomRef = React.useRef(null);
+  const inputRef = React.useRef(null);
+
+  React.useEffect(() => { setMessages([]); setInput(""); }, [result && result.id]);
+  React.useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  React.useEffect(() => { setTimeout(() => inputRef.current?.focus(), 80); }, [result && result.id, expanded]);
+
+  const send = async () => {
+    const q = input.trim();
+    if (!q || asking) return;
+    const hist = [...messages, { role: "user", content: q }];
+    setMessages(hist);
+    setInput("");
+    setAsking(true);
+    try {
+      const r = await fetch(`${API_BASE}/api/ask-followup`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: q, path: result.path, chunk_text: result.chunk_text || "" }),
+      });
+      const d = await r.json();
+      setMessages([...hist, { role: "assistant", content: d.answer || d.error || "No response." }]);
+    } catch(e) {
+      setMessages([...hist, { role: "assistant", content: "Error: start aether-logpose-ui to use chat." }]);
+    } finally { setAsking(false); }
+  };
+
+  const headerJsx = (
+    <div style={{ display: "flex", alignItems: "center", padding: "13px 16px",
+      borderBottom: `1px solid ${LP.rule}`, gap: 10, flexShrink: 0, background: LP.bg }}>
+      {onBackToPreview && (
+        <button className="lp-row-btn" style={{ padding: "0 8px", gap: 5, fontSize: 11 }}
+          onClick={onBackToPreview} title="Back to preview">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          Doc
+        </button>
+      )}
+      <FileTypeBadge kind={result.kind} size={26}/>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis",
+          whiteSpace: "nowrap", letterSpacing: "-0.01em" }}>{result.file}</div>
+        <div className="lp-mono" style={{ fontSize: 9, color: LP.muted, marginTop: 1 }}>
+          {result.cite || "—"} · score {result.score}
+        </div>
+      </div>
+      <button className="lp-row-btn" style={{ padding: "0 8px", gap: 5, fontSize: 11 }}
+        onClick={onToggleExpand} title={expanded ? "Collapse" : "Expand to full screen"}>
+        {expanded
+          ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
+          : <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>}
+      </button>
+      <button className="lp-row-btn" style={{ padding: "0 7px" }} onClick={onClose}><Icon.close size={12}/></button>
+    </div>
+  );
+
+  const threadJsx = (flexVal) => (
+    <div style={{ flex: flexVal || 1, overflow: "auto", padding: "20px 22px",
+      display: "flex", flexDirection: "column", gap: 14 }}>
+      {messages.length === 0 && (
+        <div style={{ textAlign: "center", padding: "48px 0", color: LP.dim, fontSize: 13 }}>
+          <div style={{ fontSize: 28, marginBottom: 12, color: LP.rule2 }}>✦</div>
+          Ask anything about this document.
+        </div>
+      )}
+      {messages.map((m, i) => (
+        <div key={i} style={{ display: "flex",
+          flexDirection: m.role === "user" ? "row-reverse" : "row", gap: 10 }}>
+          <div style={{
+            maxWidth: "88%", padding: "10px 14px", fontSize: 13.5, lineHeight: 1.65,
+            borderRadius: m.role === "user" ? "12px 12px 2px 12px" : "12px 12px 12px 2px",
+            background: m.role === "user" ? LP.amberDim : "#141414",
+            border: `1px solid ${m.role === "user" ? LP.amberRule : LP.rule2}`,
+            color: m.role === "user" ? LP.amber : LP.fg,
+          }}>{m.content}</div>
+        </div>
+      ))}
+      {asking && (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", color: LP.muted, fontSize: 12 }}>
+          <div style={{ width: 12, height: 12, borderRadius: "50%", border: `1.5px solid ${LP.rule2}`,
+            borderTopColor: LP.amber, animation: "lp-spin 1.4s linear infinite" }} />
+          Thinking…
+        </div>
+      )}
+      <div ref={bottomRef} />
+    </div>
+  );
+
+  const inputBarJsx = (
+    <div style={{ padding: "14px 18px", borderTop: `1px solid ${LP.rule}`, background: LP.bg, flexShrink: 0 }}>
+      <div style={{ position: "relative" }}>
+        <input ref={inputRef} className="lp-input"
+          style={{ paddingLeft: 16, paddingRight: 48, height: 42, borderRadius: 8 }}
+          placeholder="Ask about this document…"
+          value={input} onChange={e => setInput(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && !e.shiftKey && send()} />
+        <div style={{ position: "absolute", top: 0, right: 8, height: 42, display: "flex", alignItems: "center" }}>
+          {asking
+            ? <div style={{ width: 14, height: 14, borderRadius: "50%", border: `1.5px solid ${LP.rule2}`,
+                borderTopColor: LP.amber, animation: "lp-spin 1.4s linear infinite" }} />
+            : <button onClick={send} style={{ background: "none", border: "none", cursor: "pointer",
+                color: input.trim() ? LP.amber : LP.dim, fontSize: 18, padding: 0, lineHeight: 1 }}>↑</button>}
+        </div>
+      </div>
+      <div className="lp-mono" style={{ fontSize: 9, color: LP.dim, marginTop: 7,
+        letterSpacing: 0.12, textTransform: "uppercase" }}>
+        Scoped to {result.file} · Ollama
+      </div>
+    </div>
+  );
+
+  if (expanded) {
+    return (
+      <div style={{ position: "fixed", inset: 0, zIndex: 200, background: LP.bg, display: "flex" }}>
+        <div style={{ flex: 1, overflow: "auto", padding: "48px 56px", borderRight: `1px solid ${LP.rule}` }}>
+          <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 36 }}>
+            <FileTypeBadge kind={result.kind} size={44}/>
+            <div>
+              <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: "-0.015em" }}>{result.file}</div>
+              <div className="lp-mono" style={{ fontSize: 11, color: LP.muted, marginTop: 4 }}>{result.path}</div>
+              <div className="lp-mono" style={{ fontSize: 11, color: LP.dim, marginTop: 2 }}>
+                {result.cite || "—"} · score {result.score} · {result.mod}
+              </div>
+            </div>
+          </div>
+          <div style={{ borderLeft: `2px solid ${LP.amber}`, background: "rgba(255,159,28,0.04)",
+            padding: "22px 26px", borderRadius: "0 6px 6px 0", marginBottom: 32 }}>
+            <div className="lp-mono" style={{ fontSize: 10, color: LP.amber, letterSpacing: 0.12,
+              textTransform: "uppercase", marginBottom: 12 }}>Matched chunk · score {result.score}</div>
+            <Snippet parts={result.snippet} mono={result.kind === "code"} />
+          </div>
+        </div>
+        <div style={{ width: 560, display: "flex", flexDirection: "column" }}>
+          {headerJsx}
+          {threadJsx(1)}
+          {inputBarJsx}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%",
+      background: "#0A0A0A", overflow: "hidden" }}>
+      {headerJsx}
+      {threadJsx(1)}
+      {inputBarJsx}
+    </div>
+  );
+}
+
+function SearchResults() {
+  const [query, setQuery] = React.useState(() => {
+    const hash = typeof window !== 'undefined' ? window.location.hash : '';
+    if (hash.includes('?q=')) {
+      const qs = hash.split('?')[1] || '';
+      const params = Object.fromEntries(qs.split('&').map(p => p.split('=')));
+      return params.q ? decodeURIComponent(params.q) : '';
+    }
+    return "";
+  });
+  const [_initFt] = React.useState(() => {
+    const hash = typeof window !== 'undefined' ? window.location.hash : '';
+    if (hash.includes('?')) {
+      const qs = hash.split('?')[1] || '';
+      const params = Object.fromEntries(qs.split('&').map(p => p.split('=')));
+      return params.ft ? [params.ft] : [];
+    }
+    return [];
+  });
+  const [results, setResults] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [searchError, setSearchError] = React.useState(null);
+  const [durationMs, setDurationMs] = React.useState(null);
+  const [active, setActive] = React.useState(null);
+  const [rerank, setRerank] = React.useState(true);
+  const [live, setLive] = React.useState(false);
+  const [activeTypes, setActiveTypes] = React.useState(_initFt);
+  const [activeFolder, setActiveFolder] = React.useState("All folders");
+  const [chatTarget, setChatTarget] = React.useState(null);
+  const [chatExpanded, setChatExpanded] = React.useState(false);
+
+  const extMap = {
+    PDF: [".pdf"], DOCX: [".docx", ".doc"],
+    Code: [".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".java", ".cpp", ".c"],
+    XLSX: [".xlsx", ".xls"], Markdown: [".md", ".markdown"], EPUB: [".epub"],
+  };
+
+  const doSearch = React.useCallback(async (q, types, folder) => {
+    if (!q || !q.trim()) {
+      setResults([]);
+      setSearchError(null);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setSearchError(null);
+    try {
+      const exts = (types || []).flatMap(t => extMap[t] || []);
+      const typesParam = exts.length ? `&types=${exts.join(",")}` : "";
+      const srcParam = (folder && folder !== "All folders") ? `&source=${encodeURIComponent(folder)}` : "";
+      const r = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(q)}&n=10${typesParam}${srcParam}`);
+      if (!r.ok) {
+        const errData = await r.json().catch(() => ({}));
+        setSearchError(errData.error || `Server error ${r.status} — Ollama may be busy`);
+        setLoading(false);
+        return;
+      }
+      const data = await r.json();
+      if (data.results) {
+        setLive(true);
+        setResults(data.results.map(r => ({
+          id: r.id, kind: r.kind, file: r.file, path: r.path,
+          cite: r.cite, score: r.score, mod: r.mod,
+          snippet: parseSnippet(r.snippet_raw),
+          chunk_text: r.chunk_text || "",
+        })));
+        setDurationMs(data.duration_ms);
+      }
+    } catch(e) {
+      if (e.name !== 'TypeError') setSearchError("Cannot reach server — start aether-logpose-ui");
+    }
+    finally { setLoading(false); }
+  }, []);
+
+  React.useEffect(() => { doSearch(query, [], "All folders"); }, [doSearch]);
+
+  const handleSearch = (q) => { setQuery(q); doSearch(q, activeTypes, activeFolder); };
+  const handleTypesChange = (types) => {
+    setActiveTypes(types);
+    if (query) doSearch(query, types, activeFolder);
+  };
+  const handleFolderChange = (folder) => {
+    setActiveFolder(folder);
+    if (query) doSearch(query, activeTypes, folder);
+  };
+
+  const activeResult = active ? results.find(r => r.id === active) : null;
+  // Right panel: chat takes priority over preview when both targets are set
+  const rightMode = chatTarget ? "chat" : (activeResult ? "preview" : null);
+  const displayed = results.slice(0, 10);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+      {/* Top search bar \u2014 always visible */}
+      <SearchTopBar query={query} onSearch={handleSearch} />
+
+      {/* Body: filter | results | right-panel */}
+      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+
+        {/* Filter rail \u2014 scrollable, fixed width */}
+        <div style={{ width: 200, flexShrink: 0, overflowY: "auto",
+          padding: "28px 0 28px 28px", borderRight: `1px solid ${LP.rule}` }}>
+          <FilterRail rerank={rerank} setRerank={setRerank}
+            activeTypes={activeTypes} setActiveTypes={handleTypesChange}
+            activeFolder={activeFolder} setActiveFolder={handleFolderChange} />
+        </div>
+
+        {/* Results list \u2014 scrollable */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "28px 32px",
+          transition: "all 200ms ease-out", minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 14 }}>
+              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600, letterSpacing: "-0.015em" }}>
+                {loading ? "Searching\u2026"
+                  : <>{results.length} results{query && <> for <span style={{ color: LP.amber }}>"{query}"</span></>}</>}
+              </h2>
+              {!loading && live && durationMs != null && (
+                <span className="lp-mono" style={{ fontSize: 10, color: LP.muted }}>
+                  hybrid \u00b7 RRF \u00b7 {durationMs} ms
+                </span>
+              )}
+              {!loading && !live && (
+                <span className="lp-mono" style={{ fontSize: 10, color: LP.dim }}>
+                  start aether-logpose-ui
+                </span>
+              )}
+            </div>
+            <button className="lp-pill">Sort: relevance</button>
+          </div>
+
+          {loading && (
+            <div style={{ textAlign: "center", padding: "80px 0", color: LP.muted }}>
+              <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${LP.rule2}`,
+                borderTopColor: LP.amber, display: "inline-block",
+                animation: "lp-spin 1.4s linear infinite", marginBottom: 14 }} />
+              <div style={{ fontSize: 13 }}>Searching\u2026</div>
+            </div>
+          )}
+          {!loading && searchError && (
+            <div style={{ padding: "20px 18px", borderRadius: 8, border: "1px solid #3a2000",
+              background: "rgba(255,100,0,0.05)", color: "#ff8c42", fontSize: 13, marginBottom: 8 }}>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>Search error</div>
+              <div style={{ color: LP.muted }}>{searchError}</div>
+            </div>
+          )}
+          {!loading && !searchError && results.length === 0 && query && (
+            <div style={{ textAlign: "center", padding: "80px 0", color: LP.muted, fontSize: 14 }}>
+              No results for "{query}".
+            </div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {!loading && displayed.map(r => (
+              <ResultCard key={r.id} r={r} active={active === r.id}
+                onOpen={() => { setActive(active === r.id ? null : r.id); setChatTarget(null); }}
+                onAskFollowup={(target) => { setActive(target.id); setChatTarget(target); }} />
+            ))}
+            {results.length > 10 && (
+              <div style={{ textAlign: "center", padding: "20px 0", color: LP.dim, fontSize: 12 }}
+                className="lp-mono">
+                \u2193 {results.length - 10} more
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right panel: preview OR chat \u2014 46% width, non-fixed */}
+        {rightMode && (
+          <div style={{
+            flex: "0 0 46%", maxWidth: 760,
+            borderLeft: `1px solid ${LP.rule}`,
+            display: "flex", flexDirection: "column",
+            overflow: "hidden",
+            transition: "all 200ms ease-out",
+          }}>
+            {rightMode === "chat"
+              ? <ChatPanel
+                  result={chatTarget}
+                  expanded={chatExpanded}
+                  onToggleExpand={() => setChatExpanded(v => !v)}
+                  onClose={() => { setChatTarget(null); setChatExpanded(false); }}
+                  onBackToPreview={() => setChatTarget(null)} />
+              : <ResultPreview
+                  result={activeResult}
+                  onClose={() => { setActive(null); setChatTarget(null); }}
+                  onOpenChat={(r) => setChatTarget(r)} />
+            }
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+function ResultPreview({ result, onClose, onOpenChat }) {
+  const [chunks, setChunks] = React.useState(null);   // null=loading, []+=loaded
+  const [loadErr, setLoadErr] = React.useState(null);
+  const matchRef = React.useRef(null);
+  const scrollRef = React.useRef(null);
+
+  // Extract chunk_index from result.id  ("path::N")
+  const matchedChunkIdx = React.useMemo(() => {
+    const parts = (result.id || "").split("::");
+    return parts.length >= 2 ? parseInt(parts[parts.length - 1], 10) : 0;
+  }, [result.id]);
+
+  // Load full document whenever result changes
+  React.useEffect(() => {
+    setChunks(null);
+    setLoadErr(null);
+    const url = `${API_BASE}/api/file-content?path=${encodeURIComponent(result.path)}`;
+    fetch(url)
+      .then(r => r.json())
+      .then(d => {
+        if (d.error) { setLoadErr(d.error); setChunks([]); }
+        else setChunks(d.chunks || []);
+      })
+      .catch(e => { setLoadErr(String(e)); setChunks([]); });
+  }, [result.id]);
+
+  // Auto-scroll matched chunk into view once loaded
+  React.useEffect(() => {
+    if (chunks && matchRef.current && scrollRef.current) {
+      setTimeout(() => {
+        matchRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 80);
+    }
+  }, [chunks]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%",
+      background: "#0B0B0B", overflow: "hidden" }}>
+
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", padding: "16px 20px",
+        borderBottom: `1px solid ${LP.rule}`, gap: 12, flexShrink: 0 }}>
+        <FileTypeBadge kind={result.kind} size={32}/>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, letterSpacing: "-0.01em",
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{result.file}</div>
+          <div className="lp-mono" style={{ fontSize: 10, color: LP.muted, marginTop: 2,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{result.path}</div>
+        </div>
+        <button className="lp-row-btn"
+          onClick={() => fetch(`${API_BASE}/api/open-file`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:result.path})}).catch(()=>{})}>
+          <Icon.external size={12}/> Open
+        </button>
+        <button className="lp-row-btn"
+          onClick={() => navigator.clipboard.writeText(result.path).catch(()=>{})}>
+          <Icon.copy size={12}/>
+        </button>
+        <button className="lp-row-btn" style={{ padding: "0 8px" }} onClick={onClose}>
+          <Icon.close size={13}/>
+        </button>
+      </div>
+
+      {/* Meta strip */}
+      <div style={{ padding: "8px 20px", borderBottom: `1px solid ${LP.rule}`,
+        display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
+        <span className="lp-cite-pill">{result.cite || "Matched segment"}</span>
+        <span className="lp-mono" style={{ fontSize: 10, color: LP.dim }}>score {result.score}</span>
+        <span style={{ color: LP.rule2 }}>·</span>
+        <span className="lp-mono" style={{ fontSize: 10, color: LP.dim }}>{result.mod}</span>
+        {chunks && <span style={{ color: LP.rule2 }}>·</span>}
+        {chunks && <span className="lp-mono" style={{ fontSize: 10, color: LP.dim }}>{chunks.length} chunks</span>}
+        <div style={{ flex: 1 }} />
+        <button className="lp-row-btn" onClick={() => onOpenChat(result)}>
+          <Icon.message size={11}/> Chat
+        </button>
+      </div>
+
+      {/* Scrollable full-doc body */}
+      <div ref={scrollRef} style={{ flex: 1, overflow: "auto", padding: "20px 22px" }}>
+
+        {/* Loading state */}
+        {!chunks && !loadErr && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, color: LP.dim, fontSize: 13 }}>
+            <div style={{ width: 14, height: 14, borderRadius: "50%",
+              border: `1.5px solid ${LP.rule2}`, borderTopColor: LP.amber,
+              animation: "lp-spin 1.4s linear infinite", flexShrink: 0 }} />
+            Loading full document…
+          </div>
+        )}
+
+        {/* Error state */}
+        {loadErr && (
+          <div style={{ color: "#e05252", fontSize: 12, fontFamily: "monospace", padding: "10px 14px",
+            background: "rgba(224,82,82,0.07)", borderRadius: 6, border: "1px solid rgba(224,82,82,0.25)" }}>
+            {loadErr}
+          </div>
+        )}
+
+        {/* All chunks rendered in order */}
+        {chunks && chunks.map((chunk, i) => {
+          const isMatch = chunk.chunk_index === matchedChunkIdx;
+          return (
+            <div key={chunk.chunk_index}
+              ref={isMatch ? matchRef : null}
+              style={{
+                marginBottom: 12,
+                padding: "14px 16px",
+                borderRadius: "0 6px 6px 0",
+                fontSize: 13,
+                lineHeight: 1.75,
+                borderLeft: isMatch
+                  ? `3px solid ${LP.amber}`
+                  : `1px solid ${LP.rule}`,
+                background: isMatch
+                  ? "rgba(255,159,28,0.07)"
+                  : "transparent",
+                transition: "background 0.2s",
+              }}>
+              {isMatch && (
+                <div className="lp-mono" style={{ fontSize: 9, color: LP.amber, letterSpacing: 0.14,
+                  textTransform: "uppercase", marginBottom: 8 }}>
+                  ▶ Matched · score {result.score}
+                </div>
+              )}
+              {isMatch
+                ? <Snippet parts={result.snippet} mono={result.kind === "code"} />
+                : <span style={{ color: LP.fg, whiteSpace: "pre-wrap", fontFamily: result.kind === "code" ? "monospace" : "inherit" }}>
+                    {chunk.text}
+                  </span>
+              }
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Indexing dashboard
+// ─────────────────────────────────────────────────────────────────────────────
+function Ring({ pct = 67, size = 280, filesLabel = "idle" }) {
+  const r = (size - 28) / 2;
+  const C = 2 * Math.PI * r;
+  return (
+    <div style={{ position: "relative", width: size, height: size }}>
+      <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={LP.rule} strokeWidth="2" />
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={LP.amber} strokeWidth="2"
+          strokeDasharray={`${C * pct/100} ${C}`} strokeLinecap="round" />
+        {[...Array(60)].map((_, i) => (
+          <line key={i} x1={size/2} y1={6} x2={size/2} y2={12}
+            transform={`rotate(${i*6} ${size/2} ${size/2})`}
+            stroke={i*6/360 < pct/100 ? LP.amber : LP.rule2} strokeWidth="1" opacity={i % 5 === 0 ? 1 : 0.5} />
+        ))}
+      </svg>
+      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center" }}>
+        <div className="lp-eyebrow" style={{ fontSize: 10 }}>Indexing</div>
+        <div style={{ fontSize: 64, fontWeight: 600, letterSpacing: "-0.03em",
+          fontFamily: LP.mono, marginTop: 6, color: LP.fg }}>
+          {pct}<span style={{ fontSize: 28, color: LP.muted }}>%</span>
+        </div>
+        <div className="lp-mono" style={{ fontSize: 11, color: LP.muted, marginTop: 2, letterSpacing: 0 }}>
+          {filesLabel}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatTile({ label, value, sub, accent }) {
+  return (
+    <div style={{ padding: "20px 22px", border: `1px solid ${LP.rule}`, borderRadius: 8 }}>
+      <div className="lp-eyebrow" style={{ fontSize: 10 }}>{label}</div>
+      <div style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.02em", marginTop: 10,
+        fontFamily: LP.mono, color: accent ? LP.amber : LP.fg }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: LP.muted, marginTop: 4, fontFamily: LP.mono }}>{sub}</div>}
+    </div>
+  );
+}
+
+function Indexing() {
+  const stats = useStats();
+  const refreshStats = useRefreshStats();
+  const [indexJob, setIndexJob] = React.useState({ running: false, message: "idle" });
+  const [statusRows, setStatusRows] = React.useState([]);
+
+  const c = stats.total_chunks != null ? stats.total_chunks : 0;
+  const f = stats.total_files != null ? stats.total_files : 0;
+  const dirs = stats.corpus_dirs && stats.corpus_dirs.length > 0 ? stats.corpus_dirs.length : 1;
+  const model = stats.embed_model || "nomic-embed-text";
+
+  // Poll index status while running
+  React.useEffect(() => {
+    if (!indexJob.running) return;
+    const iv = setInterval(() => {
+      fetch(`${API_BASE}/api/index-status`).then(r => r.json()).then(d => {
+        setIndexJob(d);
+        if (!d.running) { refreshStats(); clearInterval(iv); }
+      }).catch(() => clearInterval(iv));
+    }, 2000);
+    return () => clearInterval(iv);
+  }, [indexJob.running]);
+
+  // Live system checks on mount
+  React.useEffect(() => {
+    const rows = [];
+    // ChromaDB: if stats loaded, DB is connected
+    rows.push({ ok: stats.total_chunks != null, label: "chromadb", msg: stats.total_chunks != null ? `${stats.total_chunks.toLocaleString()} chunks` : "connecting…" });
+    rows.push({ ok: true, label: "web server", msg: "running on port 7892" });
+    rows.push({ ok: (stats.corpus_dirs || []).length > 0, label: "corpus", msg: (stats.corpus_dirs || []).length > 0 ? `${dirs} root${dirs!==1?'s':''} configured` : "no corpus dirs set" });
+    rows.push({ ok: !!stats.embed_model, label: "embedder", msg: stats.embed_model || "not set" });
+    setStatusRows(rows);
+  }, [stats]);
+
+  const triggerIndex = async () => {
+    setIndexJob({ running: true, message: "starting…" });
+    try {
+      const r = await fetch(`${API_BASE}/api/index`, { method: "POST" });
+      const d = await r.json();
+      setIndexJob({ running: d.running !== false, message: d.message || "running…" });
+    } catch(e) {
+      setIndexJob({ running: false, message: "Error: server not running (start aether-logpose-ui)" });
+    }
+  };
+
+  return (
+    <div className="lp" style={{ position: "relative", width: "100%", flex: 1, overflow: "hidden" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1px 460px", height: "100%" }}>
+        <div style={{ padding: "48px 64px", display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
+            <div>
+              <div className="lp-eyebrow" style={{ marginBottom: 14 }}>
+                <span style={{ color: LP.amber }}>●</span>&nbsp;&nbsp;Indexing status
+              </div>
+              <h2 className="lp-h2" style={{ fontSize: 36 }}>Watching {dirs} root{dirs !== 1 ? "s" : ""}</h2>
+              <p style={{ color: LP.muted, fontSize: 14, marginTop: 10, maxWidth: 540 }}>
+                Current database has <span className="lp-mono">{c.toLocaleString()}</span> chunks across <span className="lp-mono">{f.toLocaleString()}</span> files. Embedding via <span className="lp-mono">{model}</span>.
+              </p>
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button className="lp-row-btn" onClick={refreshStats}><Icon.refresh size={12}/> Refresh stats</button>
+              <button className="lp-row-btn" onClick={triggerIndex} disabled={indexJob.running}
+                style={{ opacity: indexJob.running ? 0.5 : 1 }}>
+                <Icon.zap size={12}/> {indexJob.running ? "Indexing…" : "Re-index now"}
+              </button>
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", margin: "24px 0 44px" }}>
+            <Ring pct={100} filesLabel={`${f.toLocaleString()} files indexed`} />
+          </div>
+          <div style={{ marginBottom: 36 }}>
+            <div className="lp-mono" style={{ display: "flex", justifyContent: "space-between",
+              fontSize: 11, color: LP.muted, marginBottom: 8, letterSpacing: 0 }}>
+              <span>{indexJob.running ? indexJob.message : "Up to date"}</span>
+              <span>{indexJob.running ? "running…" : "100%"}</span>
+            </div>
+            <div style={{ height: 4, borderRadius: 999, background: LP.rule, position: "relative", overflow: "hidden" }}>
+              <div className={indexJob.running ? "lp-shimmer" : ""} style={{ position: "absolute", inset: 0, width: "100%", background: indexJob.running ? LP.amberDim : LP.amber, opacity: 0.6 }} />
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+            <StatTile label="Files indexed" value={f.toLocaleString()} sub={`across ${dirs} roots`} accent />
+            <StatTile label="Total Chunks" value={c.toLocaleString()} sub="in ChromaDB" />
+            <StatTile label="Last Sync" value={fmtAgo(stats.last_indexed)} sub="checked recently" />
+          </div>
+        </div>
+        <div className="lp-vrule" />
+        <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+          <div style={{ padding: "20px 28px", borderBottom: `1px solid ${LP.rule}`,
+            display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div className="lp-eyebrow">System status</div>
+            <div className="lp-mono" style={{ fontSize: 11, color: LP.muted }}>aether-logpose-ui</div>
+          </div>
+          <div style={{ flex: 1, padding: "16px 28px", overflow: "auto", position: "relative",
+            fontFamily: LP.mono, fontSize: 12, lineHeight: 1.85, color: LP.muted, letterSpacing: 0 }}>
+            {statusRows.map((row, i) => (
+              <div key={i} style={{ display: "flex", gap: 12 }}>
+                <span style={{ color: row.ok ? "#3FCF75" : "#FF5555", width: 12 }}>{row.ok ? "✓" : "✗"}</span>
+                <span style={{ color: LP.muted, width: 80 }}>{row.label}</span>
+                <span style={{ color: LP.fg, flex: 1 }}>{row.msg}</span>
+              </div>
+            ))}
+            {indexJob.message !== "idle" && (
+              <div style={{ marginTop: 16, padding: "10px 12px", background: LP.amberDim,
+                border: `1px solid ${LP.amberRule}`, borderRadius: 4, color: LP.fg, fontSize: 11 }}>
+                {indexJob.running && <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%",
+                  background: LP.amber, marginRight: 8 }} />}
+                {indexJob.message}
+                {indexJob.files > 0 && ` (${indexJob.indexed}/${indexJob.files} files)`}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Settings
+// ─────────────────────────────────────────────────────────────────────────────
+function Settings() {
+  const [ocr, setOcr] = React.useState(true);
+  const [rerank, setRerank] = React.useState(true);
+  const Section = ({ label, hint, children }) => (
+    <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 64,
+      padding: "32px 0", borderBottom: `1px solid ${LP.rule}` }}>
+      <div>
+        <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: "-0.012em" }}>{label}</div>
+        <div style={{ fontSize: 13, color: LP.muted, marginTop: 6, lineHeight: 1.5, maxWidth: 240 }}>{hint}</div>
+      </div>
+      <div>{children}</div>
+    </div>
+  );
+  const Chip = ({ children, removable }) => (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 30,
+      padding: "0 4px 0 12px", borderRadius: 999, border: `1px solid ${LP.rule2}`,
+      fontSize: 13, fontFamily: LP.mono, fontWeight: 500, color: LP.fg, letterSpacing: 0 }}>
+      {children}
+      {removable && (
+        <span style={{ width: 22, height: 22, borderRadius: "50%", display: "inline-flex",
+          alignItems: "center", justifyContent: "center", color: LP.muted, cursor: "pointer" }}>
+          <Icon.close size={11}/>
+        </span>
+      )}
+    </span>
+  );
+  const Field = ({ children }) => (
+    <div style={{ height: 40, borderRadius: 4, border: `1px solid ${LP.rule2}`, background: "#0E0E0E",
+      display: "flex", alignItems: "center", padding: "0 14px", fontSize: 13.5,
+      justifyContent: "space-between" }}>
+      {children}
+    </div>
+  );
+  return (
+    <div className="lp" style={{ position: "relative", width: "100%", flex: 1, minHeight: 0, overflow: "hidden" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "240px 1fr", height: "100%" }}>
+        <aside style={{ borderRight: `1px solid ${LP.rule}`, padding: "32px 24px",
+          display: "flex", flexDirection: "column", gap: 4 }}>
+          <div className="lp-eyebrow" style={{ marginBottom: 16, paddingLeft: 12 }}>Settings</div>
+          {[
+            ["Corpus", true],["Embeddings", false],["Reranker", false],["OCR", false],
+            ["Chunking", false],["File types", false],["Privacy", false],["Advanced", false],
+          ].map(([k, on]) => (
+            <div key={k} style={{ padding: "10px 12px", borderRadius: 6,
+              background: on ? "#141414" : "transparent", color: on ? LP.fg : LP.muted,
+              fontSize: 13.5, fontWeight: on ? 600 : 500, cursor: "pointer",
+              borderLeft: on ? `2px solid ${LP.amber}` : `2px solid transparent` }}>
+              {k}
+            </div>
+          ))}
+        </aside>
+        <div style={{ position: "relative" }}>
+          <div style={{ padding: "48px 80px 120px", maxWidth: 1000 }}>
+            <h2 className="lp-h2" style={{ fontSize: 32, marginBottom: 8 }}>Corpus & retrieval</h2>
+            <p style={{ color: LP.muted, fontSize: 14, marginBottom: 8 }}>
+              How Logpose finds and reads your documents.
+            </p>
+            <Section label="Corpus directories"
+              hint="Folders Logpose watches and indexes. New files are picked up within 60 seconds.">
+              <CorpusSection />
+            </Section>
+            <Section label="Embedding model"
+              hint="The local model that turns text chunks into vectors. Larger models are slower but more accurate.">
+              <EmbedModelSection Field={Field} />>
+              <div style={{ marginTop: 10, display: "flex", gap: 8, fontSize: 12, color: LP.muted, flexWrap: "wrap" }}>
+                {["nomic-embed-text", "mxbai-embed-large", "snowflake-arctic-embed", "+ custom"].map((m, i) => (
+                  <span key={m} className="lp-pill" style={{ height: 26, fontSize: 11, padding: "0 10px",
+                    ...(i === 0 ? { borderColor: LP.amber, color: LP.amber, background: LP.amberDim } : {}) }}>{m}</span>
+                ))}
+              </div>
+            </Section>
+            <Section label="Reranker"
+              hint="A cross-encoder re-scores the top results for precision. Adds ~150 ms per query.">
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 500 }}>Enable cross-encoder reranking</div>
+                  <div className="lp-mono" style={{ fontSize: 11, color: LP.muted, marginTop: 4 }}>
+                    bge-reranker-v2-m3 · 568 MB · CPU
+                  </div>
+                </div>
+                <div className={"lp-toggle" + (rerank ? " on" : "")} onClick={() => setRerank(v => !v)} />
+              </div>
+              <div style={{ marginTop: 16, display: "flex", gap: 10, opacity: rerank ? 1 : 0.4 }}>
+                <Field><span style={{ color: LP.muted }}>Top-k to rerank</span><span className="lp-mono">50</span></Field>
+                <Field><span style={{ color: LP.muted }}>Return top</span><span className="lp-mono">10</span></Field>
+              </div>
+            </Section>
+            <Section label="OCR for scanned PDFs and images"
+              hint="When a page has fewer than the threshold of recognized characters, run OCR over its raster.">
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+                <div style={{ fontSize: 14, fontWeight: 500 }}>Run OCR on low-text pages</div>
+                <div className={"lp-toggle" + (ocr ? " on" : "")} onClick={() => setOcr(v => !v)} />
+              </div>
+              <div style={{ opacity: ocr ? 1 : 0.4 }}>
+                <div className="lp-mono" style={{ display: "flex", justifyContent: "space-between",
+                  fontSize: 11, color: LP.muted, marginBottom: 6 }}>
+                  <span>Min chars per page before triggering OCR</span><span style={{ color: LP.amber }}>80</span>
+                </div>
+                <div style={{ height: 2, background: LP.rule, position: "relative", borderRadius: 999 }}>
+                  <div style={{ position: "absolute", left: 0, top: 0, width: "32%", height: "100%",
+                    background: LP.amber, borderRadius: 999 }}/>
+                  <div style={{ position: "absolute", left: "32%", top: -5, width: 12, height: 12,
+                    borderRadius: "50%", background: LP.bg, border: `2px solid ${LP.amber}`,
+                    transform: "translateX(-6px)" }}/>
+                </div>
+                <div className="lp-mono" style={{ display: "flex", justifyContent: "space-between",
+                  fontSize: 10, color: LP.dim, marginTop: 6 }}>
+                  <span>0</span><span>250</span>
+                </div>
+              </div>
+            </Section>
+            <Section label="Chunk size"
+              hint="Documents are split into overlapping chunks before embedding. Smaller chunks improve precision, larger ones preserve context.">
+              <div className="lp-mono" style={{ display: "flex", justifyContent: "space-between",
+                fontSize: 11, color: LP.muted, marginBottom: 6 }}>
+                <span>Tokens per chunk</span><span style={{ color: LP.amber }}>512 (overlap 64)</span>
+              </div>
+              <div style={{ height: 2, background: LP.rule, position: "relative", borderRadius: 999 }}>
+                <div style={{ position: "absolute", left: 0, top: 0, width: "55%", height: "100%",
+                  background: LP.amber, borderRadius: 999 }}/>
+                <div style={{ position: "absolute", left: "55%", top: -5, width: 12, height: 12,
+                  borderRadius: "50%", background: LP.bg, border: `2px solid ${LP.amber}`,
+                  transform: "translateX(-6px)" }}/>
+              </div>
+              <div className="lp-mono" style={{ display: "flex", justifyContent: "space-between",
+                fontSize: 10, color: LP.dim, marginTop: 6 }}>
+                <span>128</span><span>2048</span>
+              </div>
+            </Section>
+            <Section label="File types"
+              hint="Which extensions Logpose will index. Toggle off anything you'd rather skip.">
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {[["pdf", true],["docx", true],["xlsx", true],["md", true],["txt", true],
+                  ["html", true],["epub", true],["py", true],["js", true],["ts", true],
+                  ["go", false],["rs", false],["png (OCR)", true],["jpg (OCR)", true]].map(([t, on]) => (
+                  <span key={t} className={"lp-pill" + (on ? " active" : "")} style={{ height: 30 }}>
+                    {on && <Icon.check size={11}/>}{t}
+                  </span>
+                ))}
+              </div>
+            </Section>
+          </div>
+          <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 76,
+            background: "rgba(10,10,10,0.94)", backdropFilter: "blur(8px)",
+            borderTop: `1px solid ${LP.rule}`, display: "flex", alignItems: "center",
+            justifyContent: "space-between", padding: "0 80px" }}>
+            <div style={{ fontSize: 12, color: LP.muted }}>
+              <span style={{ color: LP.amber }}>●</span>&nbsp;&nbsp;3 unsaved changes — re-index will run for affected settings.
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button className="lp-cta-ghost" style={{ height: 38 }}>Discard</button>
+              <button className="lp-cta-primary" style={{ height: 38 }}>Save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Empty state
+// ─────────────────────────────────────────────────────────────────────────────
+function EmptyState() {
+  return (
+    <div className="lp" style={{ position: "relative", width: "100%", flex: 1, overflow: "hidden" }}>
+      <div style={{ position: "absolute", inset: "0 0 0 0", display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center", padding: "0 80px" }}>
+        <div className="lp-grid" style={{ position: "absolute", inset: 0, opacity: 0.18 }}/>
+        <div className="lp-radial-amber"/>
+        <div style={{ position: "relative", textAlign: "center" }}>
+          <div className="lp-eyebrow" style={{ marginBottom: 24 }}>● No corpus indexed</div>
+          <h1 className="lp-h1" style={{ fontSize: 56, marginBottom: 18 }}>
+            Point Logpose at a folder to begin.
+          </h1>
+          <p style={{ color: LP.muted, fontSize: 16, maxWidth: 540, margin: "0 auto 56px", lineHeight: 1.5 }}>
+            We'll scan it locally, chunk it, embed it via Ollama, and never send a byte off this machine.
+          </p>
+          <div style={{ width: 720, margin: "0 auto", padding: "56px 40px", border: `2px dashed ${LP.amber}`,
+            borderRadius: 8, background: "rgba(255,159,28,0.04)", position: "relative",
+            display: "flex", flexDirection: "column", alignItems: "center", gap: 18 }}>
+            <div style={{ width: 56, height: 56, borderRadius: "50%", border: `1px solid ${LP.amber}`,
+              display: "flex", alignItems: "center", justifyContent: "center", color: LP.amber }}>
+              <Icon.upload size={22} stroke={LP.amber} />
+            </div>
+            <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: "-0.012em" }}>
+              Drop a folder here
+            </div>
+            <div style={{ fontSize: 13, color: LP.muted, fontFamily: LP.mono }}>
+              PDF · DOCX · XLSX · code · MD · HTML · EPUB · PNG/JPG via OCR
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+              <button className="lp-cta-amber">Choose folder…</button>
+              <button className="lp-cta-ghost">Use a sample corpus</button>
+            </div>
+          </div>
+          <div style={{ marginTop: 36, color: LP.muted, fontSize: 13 }}>
+            Or paste a path.
+          </div>
+          <div style={{ width: 540, margin: "12px auto 0", display: "flex", gap: 8 }}>
+            <div style={{ flex: 1, position: "relative" }}>
+              <input className="lp-input lp-mono"
+                placeholder="/Users/you/Documents"
+                style={{ paddingLeft: 14, fontSize: 13, letterSpacing: 0 }}/>
+            </div>
+            <button className="lp-cta-ghost" style={{ height: 44 }}>Index</button>
+          </div>
+          <div style={{ marginTop: 56, display: "flex", justifyContent: "center", gap: 28,
+            fontSize: 11, color: LP.dim, fontFamily: LP.mono, letterSpacing: 0.12, textTransform: "uppercase" }}>
+            <span><Icon.shield size={11} sw={1.4}/> &nbsp;&nbsp;Files never leave this machine</span>
+            <span>·</span>
+            <span><Icon.cpu size={11}/> &nbsp;&nbsp;Embeddings run on Ollama</span>
+            <span>·</span>
+            <span>Ctrl+Z to undo any time</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Architecture / How it works
+// ─────────────────────────────────────────────────────────────────────────────
+function Architecture() {
+  const stages = [
+    { num: "01", title: "Embed", body: "Chunks pass through a local Ollama embedding model. The resulting vectors are written to a SQLite-backed column store on disk.",
+      tag: "nomic-embed-text · 768d", icon: <Icon.zap size={16} stroke={LP.amber}/> },
+    { num: "02", title: "BM25", body: "In parallel, an SQLite FTS5 index scores chunks lexically. Captures exact terms, identifiers, numbers, names — anything dense vectors blur.",
+      tag: "FTS5 · BM25", icon: <Icon.code size={16} stroke={LP.amber}/> },
+    { num: "03", title: "RRF", body: "Reciprocal Rank Fusion combines the two ordered lists into a single ranking. No tuning, no weights — just rank-based agreement.",
+      tag: "k = 60", icon: <Icon.refresh size={16} stroke={LP.amber}/> },
+    { num: "04", title: "Cross-encoder", body: "The top 50 candidates are re-scored together with the query by a cross-encoder. Slow, accurate, last in line.",
+      tag: "bge-reranker-v2-m3", icon: <Icon.cpu size={16} stroke={LP.amber}/> },
+  ];
+  return (
+    <div className="lp" style={{ position: "relative", width: "100%", minHeight: "100%", overflow: "auto" }}>
+      <div style={{ padding: "80px 80px 120px" }}>
+        <div className="lp-eyebrow" style={{ marginBottom: 24 }}>How it works</div>
+        <h1 className="lp-h1" style={{ fontSize: 64, marginBottom: 24, maxWidth: 900 }}>
+          Four stages between<br/>your question and the right paragraph.
+        </h1>
+        <p style={{ color: LP.muted, fontSize: 17, maxWidth: 640, lineHeight: 1.5 }}>
+          Each stage runs locally. The pipeline is deterministic, inspectable, and swappable —
+          drop in a different embedder, turn the reranker off, change the fusion constant.
+        </p>
+        <div style={{ position: "relative", marginTop: 96, marginBottom: 88 }}>
+          <svg style={{ position: "absolute", top: 60, left: "8%", right: "8%", height: 2, width: "84%" }}
+            viewBox="0 0 1000 4" preserveAspectRatio="none">
+            <line x1="0" y1="2" x2="1000" y2="2" stroke={LP.amber} strokeWidth="1" strokeDasharray="3 4"/>
+          </svg>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 24, position: "relative" }}>
+            {stages.map((s, i) => (
+              <div key={i} className="lp-card" style={{ background: LP.bg, padding: "28px 24px",
+                position: "relative" }}>
+                <div style={{ position: "absolute", top: -16, left: 24, height: 32, width: 32,
+                  borderRadius: "50%", background: LP.bg, border: `1px solid ${LP.amber}`,
+                  display: "flex", alignItems: "center", justifyContent: "center", color: LP.amber,
+                  fontFamily: LP.mono, fontSize: 12, fontWeight: 600 }}>{s.num.slice(1)}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+                  {s.icon}
+                  <h3 style={{ margin: 0, fontSize: 22, fontWeight: 600, letterSpacing: "-0.015em" }}>{s.title}</h3>
+                </div>
+                <p style={{ color: LP.muted, fontSize: 13.5, lineHeight: 1.55, margin: "0 0 22px" }}>{s.body}</p>
+                <div className="lp-mono" style={{ fontSize: 11, color: LP.amber, paddingTop: 16,
+                  borderTop: `1px solid ${LP.rule}`, letterSpacing: 0 }}>{s.tag}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="lp-mono" style={{ marginBottom: 88, padding: 24, border: `1px solid ${LP.rule}`,
+          borderRadius: 8, background: "#0C0C0C", fontSize: 12, color: LP.muted, lineHeight: 1.9, letterSpacing: 0 }}>
+          <div className="lp-eyebrow" style={{ marginBottom: 14, fontSize: 10 }}>Lifecycle of one query · "amount due"</div>
+          <div><span style={{ color: LP.fg }}>t+0 ms   </span>query → embed (32 ms) → top-100 dense candidates</div>
+          <div><span style={{ color: LP.fg }}>t+34 ms  </span>query → BM25 over FTS5 → top-100 lexical candidates</div>
+          <div><span style={{ color: LP.fg }}>t+68 ms  </span>RRF over both lists → top-50 fused</div>
+          <div><span style={{ color: LP.fg }}>t+72 ms  </span>cross-encoder re-scores 50 → final 10</div>
+          <div><span style={{ color: LP.amber }}>t+312 ms </span>render with citations · ready</div>
+        </div>
+        <div style={{ marginTop: 16 }}>
+          <div className="lp-eyebrow" style={{ marginBottom: 18 }}>Comparison</div>
+          <h2 className="lp-h2" style={{ fontSize: 32, marginBottom: 36 }}>
+            Three things only Logpose answers cleanly.
+          </h2>
+          <div style={{ border: `1px solid ${LP.rule}`, borderRadius: 8, overflow: "hidden" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr",
+              padding: "18px 24px", borderBottom: `1px solid ${LP.rule}`, background: "#0D0D0D" }}>
+              <div className="lp-eyebrow" style={{ fontSize: 10 }}>Property</div>
+              <div className="lp-eyebrow" style={{ fontSize: 10, color: LP.amber }}>Logpose</div>
+              <div className="lp-eyebrow" style={{ fontSize: 10 }}>ChatGPT file upload</div>
+              <div className="lp-eyebrow" style={{ fontSize: 10 }}>Notion AI</div>
+            </div>
+            {[
+              { k: "Where data lives",
+                a: "On your disk. Always.",
+                b: "OpenAI servers, retained per their policy.",
+                c: "Notion's cloud."},
+              { k: "Citations",
+                a: "Path · page · line · sheet/cell, every result.",
+                b: "Quoted but not addressable.",
+                c: "Block link to source."},
+              { k: "Customizable retrieval",
+                a: "Swap embedder, toggle reranker, tune k, RRF.",
+                b: "Closed pipeline.",
+                c: "Closed pipeline."},
+            ].map((r, i) => (
+              <div key={i} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr",
+                padding: "24px 24px", borderBottom: i === 2 ? "none" : `1px solid ${LP.rule}`,
+                fontSize: 13.5, lineHeight: 1.5 }}>
+                <div style={{ color: LP.fg, fontWeight: 600, letterSpacing: "-0.012em" }}>{r.k}</div>
+                <div style={{ color: LP.fg, background: "rgba(255,159,28,0.05)",
+                  margin: "-24px 0", padding: "24px 16px", borderLeft: `2px solid ${LP.amber}`,
+                  display: "flex", alignItems: "center" }}>
+                  <span><Icon.check size={13} stroke={LP.amber} sw={2} />&nbsp;&nbsp;{r.a}</span>
+                </div>
+                <div style={{ color: LP.muted, paddingLeft: 16 }}>{r.b}</div>
+                <div style={{ color: LP.muted, paddingLeft: 16 }}>{r.c}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Left sidebar nav — all 8 screens
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Icon-only logomark for the 56px sidebar (no text label)
+function LogoIcon({ size = 22 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <circle cx="12" cy="12" r="10" stroke={LP.fg} strokeWidth="1.4"/>
+      <circle cx="12" cy="12" r="5.5" stroke={LP.fg} strokeWidth="1.4"/>
+      <path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke={LP.fg} strokeWidth="1.4" strokeLinecap="round"/>
+      <circle cx="12" cy="12" r="1.8" fill={LP.amber}/>
+    </svg>
+  );
+}
+
+// All nav entries in order — mirrors the old TAB_ORDER
+const NAV_ALL = [
+  // ── core ──────────────────────────────────────────────────────────────────
+  { id: "home",      label: "Home",          group: "core", icon: (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+      <polyline points="9 22 9 12 15 12 15 22"/>
+    </svg>
+  )},
+  { id: "search",    label: "Search",        group: "core", icon: (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/>
+    </svg>
+  )},
+  { id: "indexing",  label: "Indexing",      group: "core", icon: (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+      <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+    </svg>
+  )},
+  { id: "settings",  label: "Settings",      group: "core", icon: (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+    </svg>
+  )},
+  // ── design / info ─────────────────────────────────────────────────────────
+  { id: "empty",     label: "Empty state",   group: "design", icon: (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h.01M15 9h.01M9 15h6"/>
+    </svg>
+  )},
+  { id: "arch",      label: "How it works",  group: "design", icon: (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10"/>
+      <line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+    </svg>
+  )},
+  { id: "editorial", label: "Hero · Editorial", group: "design", icon: (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+    </svg>
+  )},
+  { id: "quiet",     label: "Hero · Quiet",   group: "design", icon: (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="7" width="20" height="14" rx="2"/>
+      <path d="M16 3H8"/>
+    </svg>
+  )},
+];
+
+function SideNav({ tab, onSelect }) {
+  const [tooltip, setTooltip] = React.useState(null);
+
+  const NavBtn = ({ item }) => {
+    const active = tab === item.id;
+    return (
+      <div style={{ position: "relative", width: "100%", display: "flex", justifyContent: "center" }}
+        onMouseEnter={() => setTooltip(item.id)}
+        onMouseLeave={() => setTooltip(null)}>
+        <button
+          onClick={() => onSelect(item.id)}
+          style={{
+            position: "relative",
+            width: 40, height: 36, border: "none", cursor: "pointer",
+            borderRadius: 8,
+            background: active ? "rgba(255,159,28,0.13)" : "transparent",
+            color: active ? LP.amber : LP.muted,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            transition: "background 120ms, color 120ms",
+            outline: "none",
+          }}
+          onMouseEnter={e => {
+            if (!active) { e.currentTarget.style.color = LP.fg; e.currentTarget.style.background = "rgba(255,255,255,0.05)"; }
+          }}
+          onMouseLeave={e => {
+            if (!active) { e.currentTarget.style.color = LP.muted; e.currentTarget.style.background = "transparent"; }
+          }}>
+          {/* Active indicator bar on the left edge */}
+          {active && (
+            <span style={{
+              position: "absolute", left: -8, top: "50%", transform: "translateY(-50%)",
+              width: 2, height: 18, background: LP.amber, borderRadius: "0 2px 2px 0",
+            }}/>
+          )}
+          {item.icon}
+        </button>
+        {/* Hover tooltip — slides in from the right */}
+        {tooltip === item.id && (
+          <div style={{
+            position: "absolute", left: 46, top: "50%", transform: "translateY(-50%)",
+            background: "#1C1C1C", border: `1px solid ${LP.rule2}`, borderRadius: 6,
+            padding: "4px 10px", fontSize: 11, fontFamily: LP.ui, fontWeight: 500,
+            color: LP.fg, whiteSpace: "nowrap", pointerEvents: "none", zIndex: 300,
+            boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
+            letterSpacing: "-0.005em",
+          }}>
+            {item.label}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const coreItems   = NAV_ALL.filter(i => i.group === "core");
+  const designItems = NAV_ALL.filter(i => i.group === "design");
+
+  return (
+    <div style={{
+      width: 56, flexShrink: 0,
+      background: "#070707",
+      borderRight: `1px solid ${LP.rule}`,
+      display: "flex", flexDirection: "column", alignItems: "center",
+      padding: "12px 0", gap: 2, zIndex: 10, overflowY: "auto", overflowX: "visible",
+    }}>
+      {/* Logo — icon only, click goes to Home */}
+      <div
+        onClick={() => onSelect("home")}
+        title="logpose"
+        style={{
+          width: 36, height: 36, cursor: "pointer", borderRadius: 10,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          marginBottom: 6,
+          transition: "background 120ms",
+        }}
+        onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.04)"}
+        onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+        <LogoIcon size={22}/>
+      </div>
+
+      {/* Thin divider */}
+      <div style={{ width: 28, height: 1, background: LP.rule, margin: "4px 0 6px" }}/>
+
+      {/* Core items: Home, Search, Indexing, Settings */}
+      {coreItems.map(item => <NavBtn key={item.id} item={item}/>)}
+
+      {/* Divider before design/info screens */}
+      <div style={{ width: 28, height: 1, background: LP.rule, margin: "6px 0" }}/>
+
+      {/* Design / info items: Empty, How it works, Editorial, Quiet */}
+      {designItems.map(item => <NavBtn key={item.id} item={item}/>)}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// App
+// ─────────────────────────────────────────────────────────────────────────────
+const SCREENS = {
+  home:     { label: "Home",            render: () => <HeroA/> },
+  editorial:{ label: "Hero · Editorial", render: () => <HeroB/> },
+  quiet:    { label: "Hero · Quiet",     render: () => <HeroC/> },
+  search:   { label: "Search",           render: () => <SearchResults/> },
+  indexing: { label: "Indexing",         render: () => <Indexing/> },
+  settings: { label: "Settings",         render: () => <Settings/> },
+  empty:    { label: "Empty",            render: () => <EmptyState/> },
+  arch:     { label: "How it works",     render: () => <Architecture/> },
+};
+const TAB_ORDER = ["home", "search", "indexing", "settings", "empty", "arch", "editorial", "quiet"];
+
+// ── Settings sub-components that need stats context ─────────────────────────
+function CorpusSection() {
+  const stats = useStats();
+  const dirs = stats.corpus_dirs && stats.corpus_dirs.length > 0 ? stats.corpus_dirs : ["~/Documents"];
+  const c = stats.total_chunks != null ? stats.total_chunks.toLocaleString() : "…";
+  const f = stats.total_files != null ? stats.total_files.toLocaleString() : "…";
+  return (
+    <>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+        {dirs.map(d => (
+          <span key={d} style={{ display: "inline-flex", alignItems: "center", gap: 8, height: 30,
+            padding: "0 4px 0 12px", borderRadius: 999, border: `1px solid ${LP.rule2}`,
+            fontSize: 13, fontFamily: LP.mono, fontWeight: 500, color: LP.fg, letterSpacing: 0 }}>
+            {d}
+            <span style={{ width: 22, height: 22, borderRadius: "50%", display: "inline-flex",
+              alignItems: "center", justifyContent: "center", color: LP.muted, cursor: "pointer" }}>
+              <Icon.close size={11}/>
+            </span>
+          </span>
+        ))}
+        <button className="lp-pill"><Icon.plus size={11}/> Add folder</button>
+      </div>
+      <div className="lp-mono" style={{ fontSize: 11, color: LP.muted }}>
+        {dirs.length} root{dirs.length !== 1 ? "s" : ""} · {c} chunks · {f} files
+      </div>
+    </>
+  );
+}
+
+function EmbedModelSection({ Field }) {
+  const stats = useStats();
+  const model = stats.embed_model || "nomic-embed-text";
+  return (
+    <Field>
+      <span><span style={{ fontFamily: LP.mono, color: LP.muted, fontSize: 12, marginRight: 10 }}>ollama</span>
+        {model} <span style={{ color: LP.muted, fontSize: 12 }}>· local</span></span>
+      <Icon.chevR size={14} stroke={LP.muted}/>
+    </Field>
+  );
+}
+
+function App() {
+  const initial = (typeof location !== "undefined" && SCREENS[location.hash.slice(1)])
+    ? location.hash.slice(1) : "home";
+  const [tab, setTab] = React.useState(initial);
+  const [stats, setStats] = React.useState({});
+
+  const fetchStats = React.useCallback(() => {
+    fetch(`${API_BASE}/api/stats`)
+      .then(r => r.json())
+      .then(d => { if (!d.error) setStats(d); })
+      .catch(() => {});
+  }, []);
+
+  React.useEffect(() => {
+    const onHash = () => { 
+      const raw = location.hash.slice(1);
+      const k = raw.split("?")[0];
+      if (SCREENS[k]) setTab(k); 
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  React.useEffect(() => { fetchStats(); }, [fetchStats]);
+
+  const choose = (k) => { setTab(k); location.hash = k; };
+  const Render = SCREENS[tab].render;
+  return (
+    <StatsCtx.Provider value={stats}>
+      <StatsRefreshCtx.Provider value={fetchStats}>
+      <div style={{ display: "flex", height: "100vh", width: "100vw",
+        overflow: "hidden", background: LP.bg }}>
+        <SideNav tab={tab} onSelect={choose}/>
+        {/* Content area — height:100% so child screens can fill with position:absolute */}
+        <div style={{ flex: 1, minWidth: 0, height: "100vh",
+          overflow: tab === "search" ? "hidden" : "auto",
+          display: "flex", flexDirection: "column", position: "relative" }}>
+          <Render/>
+        </div>
+      </div>
+      </StatsRefreshCtx.Provider>
+    </StatsCtx.Provider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
