@@ -439,31 +439,87 @@ def api_status():
 
 
 # ── /api/index + /api/index-status ───────────────────────────────────────────
-_index_job: dict = {"running": False, "message": "idle", "files": 0, "indexed": 0, "failed": 0}
+_index_job: dict = {
+    "running": False, "message": "idle",
+    "files": 0, "files_done": 0,
+    "indexed": 0, "skipped": 0, "failed": 0,
+    "chunks": 0,
+    "current_file": "",
+    "elapsed": 0.0, "eta": 0.0,
+    "recent": [],          # last 10 newly-indexed filenames
+}
 
 
 def _run_index_dirs(dirs: list):
-    """Index a specific list of directories (used by add-corpus, upload, and full re-index)."""
-    from logpose.indexer import FileIndexer  # local import avoids circular on startup
+    """Index a list of directories, pushing live progress into _index_job."""
+    from logpose.indexer import FileIndexer
     indexer = FileIndexer(settings, _collection, _bm25)
-    _index_job.update({"running": True, "message": "scanning…", "files": 0, "indexed": 0, "failed": 0})
+    _index_job.update({
+        "running": True, "message": "scanning…",
+        "files": 0, "files_done": 0,
+        "indexed": 0, "skipped": 0, "failed": 0,
+        "chunks": 0, "current_file": "",
+        "elapsed": 0.0, "eta": 0.0, "recent": [],
+    })
+
+    # Accumulate across multiple dirs
+    acc = {"files": 0, "indexed": 0, "skipped": 0, "failed": 0, "chunks": 0}
+
+    def _on_progress(p: dict):
+        """Called by indexer after each file."""
+        acc["files"] = p["total"]          # total for current dir
+        acc["indexed"] += max(0, p["indexed"] - acc.get("_prev_indexed", 0))
+        acc["skipped"] += max(0, p["skipped"] - acc.get("_prev_skipped", 0))
+        acc["failed"]  += max(0, p["failed"]  - acc.get("_prev_failed",  0))
+        acc["chunks"]  += max(0, p["chunks"]  - acc.get("_prev_chunks",  0))
+        acc["_prev_indexed"] = p["indexed"]
+        acc["_prev_skipped"] = p["skipped"]
+        acc["_prev_failed"]  = p["failed"]
+        acc["_prev_chunks"]  = p["chunks"]
+
+        done = p["files_done"]
+        total = p["total"]
+        elapsed = p["elapsed"]
+        rate = done / elapsed if elapsed > 0 and done > 0 else 0
+        eta = (total - done) / rate if rate > 0 and total > done else 0
+
+        recent = list(_index_job.get("recent") or [])
+        if p.get("new_file"):
+            recent = ([p["new_file"]] + recent)[:12]
+
+        _index_job.update({
+            "running": True,
+            "message": f"indexing {p['current_file']}…" if p["current_file"] else "scanning…",
+            "files": total,
+            "files_done": done,
+            "indexed": p["indexed"],
+            "skipped": p["skipped"],
+            "failed": p["failed"],
+            "chunks": p["chunks"],
+            "current_file": p["current_file"],
+            "elapsed": round(elapsed, 1),
+            "eta": round(eta, 1),
+            "recent": recent,
+        })
+
     try:
-        total_indexed = 0
-        total_files = 0
-        total_failed = 0
         for corp_dir in dirs:
             p = Path(corp_dir)
-            _index_job["message"] = f"indexing {p.name}…"
-            result = _run_async(indexer.index_directory(p))
-            total_files += result.get("files", 0)
-            total_indexed += result.get("indexed", 0)
-            total_failed += result.get("failed", 0)
+            # Reset per-dir accumulators
+            for k in ("_prev_indexed", "_prev_skipped", "_prev_failed", "_prev_chunks"):
+                acc[k] = 0
+            result = _run_async(indexer.index_directory(p, progress_fn=_on_progress))
+
+        total_indexed = _index_job.get("indexed", 0)
+        total_files   = _index_job.get("files", 0)
+        total_failed  = _index_job.get("failed", 0)
+        total_chunks  = _index_job.get("chunks", 0)
+        elapsed       = _index_job.get("elapsed", 0)
         _index_job.update({
             "running": False,
-            "message": f"Done. {total_indexed} new/updated, {total_files} total, {total_failed} failed.",
-            "files": total_files,
-            "indexed": total_indexed,
-            "failed": total_failed,
+            "message": (f"Done — {total_indexed} files indexed, "
+                        f"{total_chunks} chunks, {total_files} total in {elapsed}s"),
+            "eta": 0.0, "current_file": "",
         })
         logger.info("Index job complete: %s", _index_job["message"])
     except Exception as exc:

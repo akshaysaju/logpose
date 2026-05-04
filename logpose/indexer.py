@@ -530,7 +530,7 @@ class FileIndexer:
         logger.info("Indexed %d chunks from %s", total_chunks, path.name)
         return total_chunks
 
-    async def index_directory(self, directory: Path) -> Dict[str, Any]:
+    async def index_directory(self, directory: Path, progress_fn=None) -> Dict[str, Any]:
         directory = directory.resolve()
         if not directory.exists():
             raise FileNotFoundError(f"Directory not found: {directory}")
@@ -547,20 +547,42 @@ class FileIndexer:
         failed = 0
         chunks_total = 0
 
+        # Notify caller of total before we start so UI can show N/M immediately
+        if progress_fn:
+            progress_fn({
+                "current_file": "", "files_done": 0, "total": total,
+                "indexed": 0, "skipped": 0, "failed": 0,
+                "chunks": 0, "elapsed": 0.0, "new_file": None,
+            })
+
         start_time = time.monotonic()
         await self.preload_hashes(files)
 
         for file_path in files:
+            new_chunks = 0
             try:
-                chunks = await self.index_file(file_path)
-                if chunks == 0:
+                new_chunks = await self.index_file(file_path)
+                if new_chunks == 0:
                     skipped += 1
                 else:
                     indexed += 1
-                    chunks_total += chunks
+                    chunks_total += new_chunks
             except Exception as exc:
                 logger.error("Failed to index %s: %s", file_path, exc, exc_info=True)
                 failed += 1
+
+            if progress_fn:
+                progress_fn({
+                    "current_file": file_path.name,
+                    "files_done": indexed + skipped + failed,
+                    "total": total,
+                    "indexed": indexed,
+                    "skipped": skipped,
+                    "failed": failed,
+                    "chunks": chunks_total,
+                    "elapsed": time.monotonic() - start_time,
+                    "new_file": file_path.name if new_chunks > 0 else None,
+                })
 
         duration = time.monotonic() - start_time
         return {
