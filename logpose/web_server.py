@@ -41,6 +41,7 @@ import chromadb  # noqa: E402
 from logpose.config import settings  # noqa: E402
 from logpose.bm25_index import BM25Index  # noqa: E402
 from logpose.searcher import FileSearcher  # noqa: E402
+from logpose.agent import RAGAgent as _RAGAgent  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -304,6 +305,35 @@ def api_search():
     return jsonify({"query": q, "results": out, "total": len(out), "duration_ms": elapsed_ms})
 
 
+# ── /api/agent-search ─────────────────────────────────────────────────────────
+@app.route("/api/agent-search", methods=["POST", "OPTIONS"])
+def api_agent_search():
+    """Agentic RAG: LLM agent iterates search/get_file/filter tools to answer queries."""
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        body = request.get_json(force=True) or {}
+        query = (body.get("query") or body.get("q") or "").strip()
+        if not query:
+            return jsonify({"error": "query is required"}), 400
+        max_steps = int(body.get("max_steps") or settings.agent_max_steps)
+        max_steps = max(1, min(max_steps, 10))  # clamp 1–10
+
+        agent = _RAGAgent(_searcher, max_steps=max_steps)
+        result = _run_async(agent.run(query), timeout=300.0)
+
+        return jsonify({
+            "answer": result.answer,
+            "citations": result.citations,
+            "reasoning_trace": result.reasoning_trace,
+            "steps_used": result.steps_used,
+            "model": result.model,
+        })
+    except Exception as exc:
+        logger.exception("api_agent_search failed")
+        return jsonify({"error": str(exc)}), 500
+
+
 # ── /api/open-file ────────────────────────────────────────────────────────────
 @app.route("/api/open-file", methods=["POST", "OPTIONS"])
 def api_open_file():
@@ -422,6 +452,13 @@ def api_ask_followup():
     except Exception as exc:
         logger.exception("ask-followup failed")
         return jsonify({"error": str(exc)}), 500
+
+
+# ── /api/health ───────────────────────────────────────────────────────────────
+@app.route("/api/health")
+def api_health():
+    return jsonify({"status": "ok", "agent_enabled": settings.agent_enabled,
+                    "agent_model": settings.agent_model})
 
 
 # ── /api/status ───────────────────────────────────────────────────────────────

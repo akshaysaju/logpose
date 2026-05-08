@@ -96,6 +96,16 @@ class Settings(BaseSettings):
     ocr_dpi: int = 200
     "DPI used when rendering PDF pages for OCR. 200 is a good speed/quality compromise."
 
+    # --- Agentic RAG -------------------------------------------------------
+    agent_enabled: bool = False
+    "LLM agent with tools iterates up to max_steps. LOGPOSE_AGENT_ENABLED"
+
+    agent_model: str = "qwen3.5:4b"
+    "Ollama model for agent loop. LOGPOSE_AGENT_MODEL"
+
+    agent_max_steps: int = 5
+    "Max tool-call iterations. LOGPOSE_AGENT_MAX_STEPS"
+
     # --- Misc --------------------------------------------------------------
     embed_batch_size: int = 10
     "Number of chunks to embed per Ollama API call batch."
