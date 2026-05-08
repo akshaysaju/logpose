@@ -38,8 +38,11 @@ except ImportError:
 from flask import Flask, jsonify, request, send_file  # noqa: E402
 import chromadb  # noqa: E402
 
+from typing import Optional  # noqa: E402
+
 from logpose.config import settings  # noqa: E402
 from logpose.bm25_index import BM25Index  # noqa: E402
+from logpose.graph import DocumentGraph as _DocumentGraph  # noqa: E402
 from logpose.searcher import FileSearcher  # noqa: E402
 
 logging.basicConfig(
@@ -57,6 +60,13 @@ _collection = _client.get_or_create_collection(
 )
 _bm25 = BM25Index(settings.bm25_db_path)
 _searcher = FileSearcher(settings, _collection, _bm25)
+
+# ── Document graph (optional) ──────────────────────────────────────────────────
+_graph: Optional[_DocumentGraph] = None
+if settings.graph_enabled:
+    _graph = _DocumentGraph(settings.graph_db_path)
+    logger.info("Document graph enabled: %s", settings.graph_db_path)
+
 logger.info(
     "ChromaDB collection '%s' opened (%d items)",
     settings.collection_name,
@@ -159,6 +169,21 @@ def api_stats():
         })
     except Exception as exc:
         logger.exception("api_stats failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+# ── /api/graph ────────────────────────────────────────────────────────────────
+@app.route("/api/graph")
+def api_graph():
+    """Return document relationship graph data for visualization."""
+    if _graph is None:
+        return jsonify({"nodes": [], "edges": [], "enabled": False})
+    try:
+        data = _graph.get_graph_data()
+        data["enabled"] = True
+        return jsonify(data)
+    except Exception as exc:
+        logger.exception("api_graph failed")
         return jsonify({"error": str(exc)}), 500
 
 
@@ -453,7 +478,7 @@ _index_job: dict = {
 def _run_index_dirs(dirs: list):
     """Index a list of directories, pushing live progress into _index_job."""
     from logpose.indexer import FileIndexer
-    indexer = FileIndexer(settings, _collection, _bm25)
+    indexer = FileIndexer(config=settings, collection=_collection, bm25_index=_bm25, graph=_graph)
     _index_job.update({
         "running": True, "message": "scanning…",
         "files": 0, "files_done": 0,

@@ -32,6 +32,7 @@ import yaml
 from .bm25_index import BM25Index
 from .config import Settings
 from .embeddings import get_embeddings_batch
+from .graph import extract_relationships
 from .parsers import ParsedDocument, registry as parser_registry
 
 logger = logging.getLogger(__name__)
@@ -393,10 +394,12 @@ class FileIndexer:
         config: Settings,
         collection: chromadb.Collection,
         bm25_index: Optional[BM25Index] = None,
+        graph=None,  # Optional[DocumentGraph]
     ) -> None:
         self.config = config
         self.collection = collection
         self.bm25_index = bm25_index
+        self.graph = graph
         self._hash_cache: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
@@ -525,6 +528,18 @@ class FileIndexer:
                 path.name,
                 bm25_chunks,
             )
+
+        # Extract and store document relationships (if graph enabled)
+        if self.graph is not None:
+            try:
+                rels = extract_relationships(
+                    file_path=str(path),
+                    text=parsed.text,
+                    extension=ext,
+                )
+                await asyncio.to_thread(self.graph.upsert_file, str(path), rels)
+            except Exception as exc:
+                logger.debug("Graph extraction failed for %s: %s", path.name, exc)
 
         self._hash_cache[str(path)] = current_hash
         logger.info("Indexed %d chunks from %s", total_chunks, path.name)
