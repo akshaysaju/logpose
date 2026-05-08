@@ -1,20 +1,26 @@
 """
-searcher.py — Hybrid search with cross-encoder reranking.
+searcher.py — Hybrid search with optional HyDE, query expansion, and context expansion.
 
-Three-stage retrieval pipeline:
+Four-stage retrieval pipeline:
 
-  1. **Recall**       — semantic (Ollama → ChromaDB cosine) and BM25
-                        (SQLite FTS5) run *concurrently* via asyncio.gather.
-  2. **Fusion**       — Reciprocal Rank Fusion merges the two ranked lists
-                        with k=60: ``score(d) = Σ 1/(k + rank_i(d) + 1)``.
-  3. **Rerank**       — Optional cross-encoder (sentence-transformers
-                        ``ms-marco-MiniLM`` by default) re-scores the top-N
-                        with full attention over (query, chunk) pairs.
+  1. Recall       — semantic (Ollama → ChromaDB cosine) + BM25 (SQLite FTS5)
+                    + optional HyDE passage embedding
+                    + optional query-expansion alternatives
+                    All run concurrently via asyncio.gather.
 
-The reranker materially improves precision on long natural-language queries.
-It runs in a thread pool, falls back gracefully if the package or weights
-are unavailable, and only re-orders the top ``rerank_top_k`` rather than
-every fused result.
+  2. Fusion       — Reciprocal Rank Fusion (k=60) merges all ranked lists.
+
+  3. Rerank       — Optional cross-encoder (sentence-transformers) re-scores
+                    the top-N with full attention over (query, chunk) pairs.
+
+  4. Expansion    — For the final top results, if context_before / context_after
+                    metadata is available, the retrieval context is widened to
+                    include adjacent blocks (function neighbours, surrounding
+                    paragraphs) for the LLM context window.
+
+HyDE and query expansion are enabled via config:
+  LOGPOSE_HYDE_ENABLED=true
+  LOGPOSE_QUERY_EXPANSION_ENABLED=true
 """
 
 from __future__ import annotations
@@ -35,10 +41,9 @@ logger = logging.getLogger(__name__)
 _RRF_K = 60
 
 
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # Result dataclass
-# ---------------------------------------------------------------------------
-
+# ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class SearchResult:
@@ -51,8 +56,22 @@ class SearchResult:
     score: float
     line_start: int = 0
     line_end: int = 0
-    loc: str = ""  # Friendly citation: "page 3", "lines 42-78", "Sheet1!12-30"
+    loc: str = ""
+    # Rich chunk metadata
+    chunk_type: str = ""
+    symbol_name: str = ""
+    heading_path: str = ""
+    # Expanded context (adjacent blocks — not in the embedding, used for LLM)
+    context_before: str = ""
+    context_after: str = ""
+    # Full metadata dict
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def full_context(self) -> str:
+        """Chunk text expanded with adjacent context for LLM prompts."""
+        parts = [p for p in [self.context_before, self.chunk_text, self.context_after] if p]
+        return "\n\n".join(parts)
 
 
 def _chunk_key(r: SearchResult) -> str:
@@ -66,10 +85,9 @@ def _parse_chunk_index(chunk_id: str) -> int:
         return 0
 
 
-# ---------------------------------------------------------------------------
-# Cross-encoder reranker (lazy-loaded singleton)
-# ---------------------------------------------------------------------------
-
+# ─────────────────────────────────────────────────────────────────────────────
+# Cross-encoder reranker (lazy singleton)
+# ─────────────────────────────────────────────────────────────────────────────
 
 class _Reranker:
     """Lazy-loaded cross-encoder. Returns identity scores if unavailable."""
@@ -102,15 +120,12 @@ class _Reranker:
                 "Install with: pip install sentence-transformers",
                 self.model_name, exc,
             )
-            self._model = None
 
     def score(self, query: str, passages: List[str]) -> Optional[List[float]]:
-        """Return one score per passage, or ``None`` if reranking is unavailable."""
         self._load()
         if self._model is None or not passages:
             return None
         try:
-            # CrossEncoder.predict returns higher-better raw logit scores.
             scores = self._model.predict([(query, p) for p in passages])
             return [float(s) for s in scores]
         except Exception as exc:
@@ -118,13 +133,12 @@ class _Reranker:
             return None
 
 
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # FileSearcher
-# ---------------------------------------------------------------------------
-
+# ─────────────────────────────────────────────────────────────────────────────
 
 class FileSearcher:
-    """Hybrid (semantic + BM25 + RRF + optional cross-encoder) search."""
+    """Hybrid (semantic + BM25 + HyDE + expansion + RRF + cross-encoder) search."""
 
     def __init__(
         self,
@@ -136,9 +150,7 @@ class FileSearcher:
         self.collection = collection
         self.bm25_index = bm25_index
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    # ── Public API ────────────────────────────────────────────────────────────
 
     async def search(
         self,
@@ -150,44 +162,69 @@ class FileSearcher:
         deduplicate: bool = True,
         rerank: Optional[bool] = None,
         bm25_query: Optional[str] = None,
+        use_hyde: Optional[bool] = None,
+        use_query_expansion: Optional[bool] = None,
     ) -> List[SearchResult]:
-        """Search the corpus with hybrid retrieval and optional reranking.
+        """
+        Search the corpus with hybrid retrieval + optional HyDE/expansion/reranking.
 
         Args:
-            query:           Natural-language query.
-            n_results:       Top-K to return.
-            filter_extension: Restrict to a single extension (e.g. ``".pdf"``).
-            filter_source:   Restrict to a parent-directory name.
-            min_score:       Discard results below this fused score.
-            deduplicate:     Keep only the best-scoring chunk per file.
-            rerank:          Override config ``enable_reranker``. Set False
-                             to skip cross-encoder pass even when configured.
+            query:                Natural-language query.
+            n_results:            Top-K to return.
+            filter_extension:     Restrict to one extension, e.g. ".pdf".
+            filter_source:        Restrict to a parent-directory name.
+            min_score:            Discard results below this fused score.
+            deduplicate:          Keep only the best-scoring chunk per file.
+            rerank:               Override config enable_reranker.
+            bm25_query:           Cleaned query for BM25 (defaults to query).
+            use_hyde:             Override config hyde_enabled.
+            use_query_expansion:  Override config query_expansion_enabled.
         """
         count = await asyncio.to_thread(self.collection.count)
         if count == 0:
-            logger.info("Collection is empty — no results.")
             return []
 
         where = self._build_where(filter_extension, filter_source)
         fetch_n = min(n_results * 5, max(n_results, 50))
         fetch_n = min(fetch_n, count)
 
-        semantic_task = asyncio.create_task(self._semantic_search(query, fetch_n, where))
         bm25_q = bm25_query if bm25_query is not None else query
-        bm25_task = asyncio.create_task(self._bm25_search(bm25_q, fetch_n))
-        semantic_results, bm25_results = await asyncio.gather(semantic_task, bm25_task)
+        do_hyde = self.config.hyde_enabled if use_hyde is None else use_hyde
+        do_expand = self.config.query_expansion_enabled if use_query_expansion is None else use_query_expansion
 
-        merged = self._rrf_merge(semantic_results, bm25_results)
+        # Launch all recall tasks concurrently
+        tasks = [
+            asyncio.create_task(self._semantic_search(query, fetch_n, where)),
+            asyncio.create_task(self._bm25_search(bm25_q, fetch_n)),
+        ]
+        if do_hyde:
+            tasks.append(asyncio.create_task(self._hyde_search(query, fetch_n, where)))
+        if do_expand:
+            tasks.append(asyncio.create_task(self._expansion_search(query, fetch_n, where)))
 
-        # Apply post-merge filters so BM25-only hits (which have empty
-        # metadata) are also subject to ``file_type`` / ``source``.
+        raw_lists = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Flatten valid result lists
+        all_lists: List[List[SearchResult]] = []
+        for res in raw_lists:
+            if isinstance(res, Exception):
+                logger.warning("Search task failed: %s", res)
+            else:
+                all_lists.append(res)
+
+        if not all_lists:
+            return []
+
+        # RRF merge across all result lists
+        merged = self._rrf_merge_many(all_lists)
+
+        # Post-merge filters (covers BM25-only hits with empty metadata)
         if filter_extension or filter_source:
             merged = self._apply_post_filters(merged, filter_extension, filter_source)
         if min_score > 0.0:
             merged = [r for r in merged if r.score >= min_score]
 
-        # Reranking happens BEFORE deduplication so the cross-encoder can
-        # promote a strong chunk that the RRF stage initially under-ranked.
+        # Rerank before deduplication so cross-encoder can promote under-ranked chunks
         use_reranker = self.config.enable_reranker if rerank is None else rerank
         if use_reranker and merged:
             merged = await self._rerank(query, merged)
@@ -218,22 +255,20 @@ class FileSearcher:
                 results.append(self._result_from_meta(doc or "", meta, score=1.0))
         return self._deduplicate(results)
 
-    # ------------------------------------------------------------------
-    # Backends
-    # ------------------------------------------------------------------
+    # ── Retrieval backends ────────────────────────────────────────────────────
 
     async def _semantic_search(
         self, query: str, fetch_n: int, where: Optional[Dict[str, Any]]
     ) -> List[SearchResult]:
         query_embedding = await get_embedding(query)
-        query_kwargs: Dict[str, Any] = {
+        kwargs: Dict[str, Any] = {
             "query_embeddings": [query_embedding],
             "n_results": fetch_n,
             "include": ["documents", "metadatas", "distances"],
         }
         if where:
-            query_kwargs["where"] = where
-        raw = await asyncio.to_thread(self.collection.query, **query_kwargs)
+            kwargs["where"] = where
+        raw = await asyncio.to_thread(self.collection.query, **kwargs)
         return self._parse_chroma_results(raw)
 
     async def _bm25_search(self, query: str, fetch_n: int) -> List[SearchResult]:
@@ -252,52 +287,82 @@ class FileSearcher:
             for r in bm25_results
         ]
 
+    async def _hyde_search(
+        self, query: str, fetch_n: int, where: Optional[Dict[str, Any]]
+    ) -> List[SearchResult]:
+        """Embed a hypothetical answer passage instead of the raw query."""
+        try:
+            from .hyde import generate_hyde_passage
+            passage = await generate_hyde_passage(query)
+            if not passage:
+                return []
+            return await self._semantic_search(passage, fetch_n, where)
+        except Exception as exc:
+            logger.debug("HyDE search failed: %s", exc)
+            return []
+
+    async def _expansion_search(
+        self, query: str, fetch_n: int, where: Optional[Dict[str, Any]]
+    ) -> List[SearchResult]:
+        """Search with 2 query rewrites, return merged results."""
+        try:
+            from .hyde import expand_query
+            alternatives = await expand_query(query)
+            if not alternatives:
+                return []
+            sub_tasks = [
+                self._semantic_search(alt, max(fetch_n // 2, 10), where)
+                for alt in alternatives
+            ]
+            sub_results = await asyncio.gather(*sub_tasks, return_exceptions=True)
+            merged: List[SearchResult] = []
+            for res in sub_results:
+                if not isinstance(res, Exception):
+                    merged.extend(res)
+            return merged
+        except Exception as exc:
+            logger.debug("Query expansion search failed: %s", exc)
+            return []
+
     async def _rerank(self, query: str, results: List[SearchResult]) -> List[SearchResult]:
-        """Rerank the top ``rerank_top_k`` with a cross-encoder."""
         top_k = max(self.config.rerank_top_k, len(results) // 2)
         head = results[:top_k]
         tail = results[top_k:]
-
         reranker = _Reranker.get(self.config.reranker_model)
         scores = await asyncio.to_thread(reranker.score, query, [r.chunk_text for r in head])
         if scores is None:
-            return results  # Fallback: keep RRF order.
-
-        # Replace fused score with reranker score on the head.
+            return results
         rescored = [replace(r, score=round(float(s), 6)) for r, s in zip(head, scores)]
         rescored.sort(key=lambda x: x.score, reverse=True)
-        # Tail keeps fused scores (much smaller numerically) — stable suffix.
         return rescored + tail
 
-    # ------------------------------------------------------------------
-    # RRF
-    # ------------------------------------------------------------------
+    # ── RRF ──────────────────────────────────────────────────────────────────
 
     def _rrf_merge(
         self,
         semantic: List[SearchResult],
         bm25: List[SearchResult],
     ) -> List[SearchResult]:
+        return self._rrf_merge_many([semantic, bm25])
+
+    def _rrf_merge_many(self, lists: List[List[SearchResult]]) -> List[SearchResult]:
+        """RRF merge across N ranked lists."""
         rrf_scores: Dict[str, float] = {}
         result_map: Dict[str, SearchResult] = {}
-        for rank, r in enumerate(semantic):
-            k = _chunk_key(r)
-            rrf_scores[k] = rrf_scores.get(k, 0.0) + 1.0 / (_RRF_K + rank + 1)
-            result_map[k] = r
-        for rank, r in enumerate(bm25):
-            k = _chunk_key(r)
-            rrf_scores[k] = rrf_scores.get(k, 0.0) + 1.0 / (_RRF_K + rank + 1)
-            if k not in result_map:
-                result_map[k] = r
+        for ranked_list in lists:
+            for rank, r in enumerate(ranked_list):
+                k = _chunk_key(r)
+                rrf_scores[k] = rrf_scores.get(k, 0.0) + 1.0 / (_RRF_K + rank + 1)
+                # Prefer the result that has full metadata (ChromaDB result)
+                if k not in result_map or not result_map[k].metadata:
+                    result_map[k] = r
         merged = [
             replace(result_map[k], score=round(score, 6))
             for k, score in rrf_scores.items()
         ]
         return sorted(merged, key=lambda x: x.score, reverse=True)
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _build_where(
         self,
@@ -312,13 +377,9 @@ class FileSearcher:
             conditions.append({"source": {"$eq": source}})
         if not conditions:
             return None
-        if len(conditions) == 1:
-            return conditions[0]
-        return {"$and": conditions}
+        return conditions[0] if len(conditions) == 1 else {"$and": conditions}
 
-    def _result_from_meta(
-        self, doc: str, meta: Dict[str, Any], score: float
-    ) -> SearchResult:
+    def _result_from_meta(self, doc: str, meta: Dict[str, Any], score: float) -> SearchResult:
         return SearchResult(
             file_path=meta.get("file_path", ""),
             file_name=meta.get("file_name", ""),
@@ -328,24 +389,24 @@ class FileSearcher:
             line_start=int(meta.get("line_start", 0) or 0),
             line_end=int(meta.get("line_end", 0) or 0),
             loc=str(meta.get("loc", "") or ""),
+            chunk_type=str(meta.get("chunk_type", "") or ""),
+            symbol_name=str(meta.get("symbol_name", "") or ""),
+            heading_path=str(meta.get("heading_path", "") or ""),
+            context_before=str(meta.get("context_before", "") or ""),
+            context_after=str(meta.get("context_after", "") or ""),
             metadata=meta,
         )
 
     def _parse_chroma_results(self, raw: Dict[str, Any]) -> List[SearchResult]:
         results: List[SearchResult] = []
-        documents_list = raw.get("documents") or [[]]
-        metadatas_list = raw.get("metadatas") or [[]]
-        distances_list = raw.get("distances") or [[]]
-        documents = documents_list[0] if documents_list else []
-        metadatas = metadatas_list[0] if metadatas_list else []
-        distances = distances_list[0] if distances_list else []
-        for doc, meta, dist in zip(documents, metadatas, distances):
+        docs = (raw.get("documents") or [[]])[0]
+        metas = (raw.get("metadatas") or [[]])[0]
+        dists = (raw.get("distances") or [[]])[0]
+        for doc, meta, dist in zip(docs, metas, dists):
             if not isinstance(meta, dict):
                 continue
             results.append(
-                self._result_from_meta(
-                    doc or "", meta, score=round(1.0 - float(dist), 4)
-                )
+                self._result_from_meta(doc or "", meta, score=round(1.0 - float(dist), 4))
             )
         return results
 
@@ -355,19 +416,10 @@ class FileSearcher:
         extension: Optional[str],
         source: Optional[str],
     ) -> List[SearchResult]:
-        """Drop results that don't match the requested filters.
-
-        ChromaDB applies the filter on the semantic side, but BM25 does not —
-        and BM25-only hits arrive with empty metadata. We re-derive extension
-        from ``file_path`` and parent dir name from the path itself so the
-        filter is uniform across both retrieval backends.
-        """
         from pathlib import Path
-
         ext = None
         if extension:
             ext = extension.lower() if extension.startswith(".") else f".{extension.lower()}"
-
         out: List[SearchResult] = []
         for r in results:
             p = Path(r.file_path)

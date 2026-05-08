@@ -1,22 +1,29 @@
 """
-indexer.py — Parse, chunk (with line tracking), embed, and persist.
+indexer.py — Parse → chunk → embed → persist.
 
 Pipeline per file:
-  1. Parse with the right :class:`FileParser` → :class:`ParsedDocument`
-  2. Chunk into :class:`Chunk` objects that carry **line ranges**
-  3. Translate line ranges into a friendly ``loc`` string (lines / pages /
-     paragraphs / sheet+rows) using the parsed document's ``line_labels``
-  4. Embed each batch of chunks via Ollama
-  5. Upsert into ChromaDB (vector) + SQLite FTS5 (BM25)
+  1. Exclusion check   — skip hidden dirs, node_modules, large binaries, etc.
+  2. Parse             — right FileParser for the extension → ParsedDocument
+  3. Chunk             — chunk_document() dispatches type-aware chunker
+  4. Embed             — batch Ollama /api/embed calls
+  5. Upsert            — ChromaDB (vector) + SQLite FTS5 (BM25)
 
-Idempotency: mtime-based — unchanged files are skipped. Hashes are
-preloaded in one ChromaDB query per indexing run.
+Idempotency: mtime-hash based — unchanged files are skipped.
+Hashes preloaded in batched ChromaDB queries before the main loop.
+
+New vs original:
+  - Uses chunker.chunk_document() instead of inline paragraph chunker
+  - Stores richer metadata: chunk_type, symbol_name, heading_path,
+    context_before, context_after (for retrieval expansion)
+  - Exclusion patterns: .git, node_modules, __pycache__, *.pyc, etc.
+  - File size guard: skip files > max_file_size_mb
+  - Per-type chunk sizes from config
 """
 
 from __future__ import annotations
 
-import ast
 import asyncio
+import fnmatch
 import hashlib
 import logging
 import re
@@ -30,6 +37,7 @@ import chromadb
 import yaml
 
 from .bm25_index import BM25Index
+from .chunker import Chunk, chunk_document
 from .config import Settings
 from .embeddings import get_embeddings_batch
 from .parsers import ParsedDocument, registry as parser_registry
@@ -37,260 +45,77 @@ from .parsers import ParsedDocument, registry as parser_registry
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Chunk type — carries line range alongside text
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Exclusion helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
-
-@dataclass
-class Chunk:
-    """A chunk of source text plus the 1-indexed line range it spans."""
-
-    text: str
-    line_start: int
-    line_end: int
-
-
-# ---------------------------------------------------------------------------
-# Chunkers — every chunker returns List[Chunk] with line ranges
-# ---------------------------------------------------------------------------
-
-
-def _split_paragraphs_with_lines(text: str) -> List[Tuple[str, int, int]]:
-    """Split ``text`` on blank lines, preserving 1-indexed line ranges.
-
-    Returns list of (paragraph_text, line_start, line_end).
+def _should_skip(path: Path, config: Settings) -> Optional[str]:
     """
-    paragraphs: List[Tuple[str, int, int]] = []
-    lines = text.splitlines()
-    current: List[str] = []
-    current_start: Optional[int] = None
-    for i, line in enumerate(lines, start=1):
-        if line.strip() == "":
-            if current:
-                paragraphs.append(("\n".join(current), current_start, i - 1))
-                current = []
-                current_start = None
-            continue
-        if current_start is None:
-            current_start = i
-        current.append(line)
-    if current:
-        paragraphs.append(("\n".join(current), current_start, len(lines)))
-    return paragraphs
+    Return a skip-reason string if this path should be excluded, or None.
+    Checked before any parsing or I/O on the file.
+    """
+    # 1. Excluded directory component
+    for part in path.parts:
+        if part in config.exclude_dirs_set:
+            return f"excluded dir '{part}'"
 
+    # 2. Hidden directory (any component starts with '.' except the top-level dir)
+    for part in path.parts[:-1]:  # Don't skip the file itself for being hidden
+        if part.startswith(".") and part not in (".", ".."):
+            # Allow .claude, .config etc. at the top level corpus dir only
+            # but block .git, .venv etc. anywhere deeper
+            if part in {".git", ".svn", ".hg", ".venv", ".env", ".pytest_cache",
+                        ".mypy_cache", ".ruff_cache", ".hypothesis", ".next",
+                        ".nuxt", ".cargo", ".gradle"}:
+                return f"hidden dir '{part}'"
 
-def chunk_text_lined(text: str, chunk_size: int, overlap: int) -> List[Chunk]:
-    """Paragraph-preserving chunker that tracks 1-indexed line ranges."""
-    paragraphs = _split_paragraphs_with_lines(text)
-    if not paragraphs:
-        return []
+    # 3. File name patterns
+    name = path.name
+    for pattern in config.exclude_patterns:
+        if fnmatch.fnmatch(name, pattern):
+            return f"excluded pattern '{pattern}'"
 
-    chunks: List[Chunk] = []
-    buf: List[Tuple[str, int, int]] = []
-    buf_chars = 0
-
-    def flush() -> None:
-        nonlocal buf, buf_chars
-        if not buf:
-            return
-        joined = "\n\n".join(p[0] for p in buf)
-        if len(joined) >= 50:
-            chunks.append(Chunk(text=joined, line_start=buf[0][1], line_end=buf[-1][2]))
-        buf = []
-        buf_chars = 0
-
-    for ptext, l_start, l_end in paragraphs:
-        if len(ptext) > chunk_size:
-            flush()
-            # Hard-slice oversized paragraph but keep its full line range on every slice.
-            step = max(chunk_size - overlap, 1)
-            i = 0
-            while i < len(ptext):
-                slice_text = ptext[i : i + chunk_size].strip()
-                if len(slice_text) >= 50:
-                    chunks.append(Chunk(text=slice_text, line_start=l_start, line_end=l_end))
-                i += step
-            continue
-
-        if buf_chars + len(ptext) > chunk_size and buf:
-            flush()
-            # Carry the last paragraph forward as overlap context.
-            buf.append((ptext, l_start, l_end))
-            buf_chars = len(ptext)
-        else:
-            buf.append((ptext, l_start, l_end))
-            buf_chars += len(ptext) + 2
-
-    flush()
-    return chunks
-
-
-def chunk_python_lined(source: str, chunk_size: int, overlap: int) -> List[Chunk]:
-    """AST-aware chunker for Python — one chunk per top-level function/class."""
+    # 4. File size guard
     try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        logger.debug("AST parse failed — falling back to paragraph chunking")
-        return chunk_text_lined(source, chunk_size, overlap)
+        if path.stat().st_size > config.max_file_bytes:
+            return f"file too large ({path.stat().st_size // 1024 // 1024} MB)"
+    except OSError:
+        return "stat failed"
 
-    lines = source.splitlines()
-
-    defs: List[Tuple[int, int]] = []  # (1-indexed start, 1-indexed end inclusive)
-    for node in ast.iter_child_nodes(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            defs.append((node.lineno, node.end_lineno or node.lineno))
-
-    covered: set = set()
-    for s, e in defs:
-        for i in range(s, e + 1):
-            covered.add(i)
-
-    # Module-level lines: pick the longest consecutive run for the line range.
-    mod_lines: List[Tuple[int, str]] = [(i, ln) for i, ln in enumerate(lines, start=1) if i not in covered]
-    chunks: List[Chunk] = []
-
-    if mod_lines:
-        mod_text = "\n".join(ln for _, ln in mod_lines).strip()
-        if len(mod_text) >= 50:
-            chunks.append(
-                Chunk(
-                    text=mod_text,
-                    line_start=mod_lines[0][0],
-                    line_end=mod_lines[-1][0],
-                )
-            )
-
-    for s, e in sorted(defs):
-        block = "\n".join(lines[s - 1 : e]).strip()
-        if not block or len(block) < 50:
-            continue
-        if len(block) > chunk_size:
-            # Sub-chunk the oversized block; sub-chunks share the def's line range.
-            for sub in chunk_text_lined(block, chunk_size, overlap):
-                chunks.append(Chunk(text=sub.text, line_start=s, line_end=e))
-        else:
-            chunks.append(Chunk(text=block, line_start=s, line_end=e))
-
-    return chunks if chunks else chunk_text_lined(source, chunk_size, overlap)
+    return None
 
 
-_JS_SPLIT_RE = re.compile(
-    r"^(?:export\s+(?:default\s+)?)?"
-    r"(?:async\s+)?"
-    r"(?:function\s+\w+|class\s+\w+|(?:const|let|var)\s+\w+\s*=)",
-    re.MULTILINE,
-)
+# ─────────────────────────────────────────────────────────────────────────────
+# YAML front-matter
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _extract_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
+    """Parse YAML front-matter from a Markdown string."""
+    pattern = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+    match = pattern.match(text)
+    if not match:
+        return {}, text
+    try:
+        metadata = yaml.safe_load(match.group(1)) or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+    except yaml.YAMLError as exc:
+        logger.warning("YAML front-matter parse error: %s", exc)
+        metadata = {}
+    return metadata, text[match.end():]
 
 
-def chunk_js_ts_lined(source: str, chunk_size: int, overlap: int) -> List[Chunk]:
-    """Regex-aware chunker for JS/TS that tracks line ranges."""
-    boundaries = [m.start() for m in _JS_SPLIT_RE.finditer(source)]
-    if not boundaries:
-        return chunk_text_lined(source, chunk_size, overlap)
-
-    def line_of_offset(off: int) -> int:
-        return source.count("\n", 0, off) + 1
-
-    chunks: List[Chunk] = []
-    preamble = source[: boundaries[0]].strip()
-    if len(preamble) >= 50:
-        chunks.append(Chunk(text=preamble, line_start=1, line_end=line_of_offset(boundaries[0]) - 1))
-
-    for idx, start in enumerate(boundaries):
-        end = boundaries[idx + 1] if idx + 1 < len(boundaries) else len(source)
-        block = source[start:end].strip()
-        if not block or len(block) < 50:
-            continue
-        l_start = line_of_offset(start)
-        l_end = line_of_offset(end - 1)
-        if len(block) > chunk_size:
-            for sub in chunk_text_lined(block, chunk_size, overlap):
-                chunks.append(Chunk(text=sub.text, line_start=l_start, line_end=l_end))
-        else:
-            chunks.append(Chunk(text=block, line_start=l_start, line_end=l_end))
-
-    return chunks if chunks else chunk_text_lined(source, chunk_size, overlap)
+def _mtime_hash(path: Path) -> str:
+    mtime = path.stat().st_mtime
+    return hashlib.md5(f"{path}:{mtime}".encode()).hexdigest()  # noqa: S324
 
 
-def chunk_pdf_lined(text: str, chunk_size: int, overlap: int) -> List[Chunk]:
-    """Line-aware PDF chunker. Each line becomes the unit; chunks accumulate
-    until ``chunk_size`` is reached; the last few lines carry forward as overlap.
-    Tracks the 1-indexed line range that maps back to ``ParsedDocument.line_labels``.
-    """
-    lines = text.splitlines()
-    if not lines:
-        return []
-
-    chunks: List[Chunk] = []
-    buf: List[Tuple[int, str]] = []  # (1-indexed line number, content)
-    buf_len = 0
-
-    def flush() -> None:
-        nonlocal buf, buf_len
-        if not buf:
-            return
-        body = "\n".join(ln for _, ln in buf if ln.strip())
-        if len(body) >= 50:
-            chunks.append(Chunk(text=body, line_start=buf[0][0], line_end=buf[-1][0]))
-        buf = []
-        buf_len = 0
-
-    for i, line in enumerate(lines, start=1):
-        if not line.strip():
-            continue
-        line_len = len(line) + 1
-        if buf_len + line_len > chunk_size and buf:
-            # Flush, then carry tail forward as overlap.
-            tail: List[Tuple[int, str]] = []
-            tail_len = 0
-            for prev in reversed(buf):
-                if tail_len + len(prev[1]) + 1 > overlap:
-                    break
-                tail.insert(0, prev)
-                tail_len += len(prev[1]) + 1
-            flush()
-            buf = tail
-            buf_len = tail_len
-        buf.append((i, line))
-        buf_len += line_len
-
-    flush()
-    return chunks
-
-
-def chunk_for_extension(
-    parsed: ParsedDocument,
-    extension: str,
-    chunk_size: int,
-    overlap: int,
-) -> List[Chunk]:
-    """Pick the right chunker based on extension and parser output."""
-    ext = extension.lower()
-    text = parsed.text
-    if ext == ".py":
-        return chunk_python_lined(text, chunk_size, overlap)
-    if ext in (".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"):
-        return chunk_js_ts_lined(text, chunk_size, overlap)
-    # PDFs / DOCX / XLSX / CSV / EPUB all benefit from line-mode chunking
-    # because their parsers emit one logical row per line.
-    if parsed.label_kind in ("page", "row", "paragraph", "chapter") or ext == ".pdf":
-        return chunk_pdf_lined(text, chunk_size, overlap)
-    return chunk_text_lined(text, chunk_size, overlap)
-
-
-# ---------------------------------------------------------------------------
-# Location helpers — translate line ranges into citations
-# ---------------------------------------------------------------------------
-
+# ─────────────────────────────────────────────────────────────────────────────
+# Location metadata  (translate line range → friendly citation)
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _location_metadata(chunk: Chunk, parsed: ParsedDocument) -> Dict[str, Any]:
-    """Build location-related metadata fields for a chunk.
-
-    Always populates ``line_start`` / ``line_end``. When the parser provided
-    page/sheet/etc. labels, also derives ``label_start`` / ``label_end`` and
-    a friendly ``loc`` citation string.
-    """
+    """Build location-related metadata for a chunk."""
     meta: Dict[str, Any] = {
         "line_start": chunk.line_start,
         "line_end": chunk.line_end,
@@ -300,17 +125,15 @@ def _location_metadata(chunk: Chunk, parsed: ParsedDocument) -> Dict[str, Any]:
         meta["loc"] = (
             f"line {chunk.line_start}"
             if chunk.line_start == chunk.line_end
-            else f"lines {chunk.line_start}-{chunk.line_end}"
+            else f"lines {chunk.line_start}–{chunk.line_end}"
         )
         meta["label_kind"] = "line"
         return meta
 
-    # Parsers index labels parallel to text.splitlines() — i.e. labels[i] is for line i+1.
     labels = parsed.line_labels
     s = max(0, min(chunk.line_start - 1, len(labels) - 1))
     e = max(0, min(chunk.line_end - 1, len(labels) - 1))
-    span_labels = labels[s : e + 1]
-
+    span_labels = labels[s: e + 1]
     seen: List[str] = []
     for lbl in span_labels:
         if lbl and lbl not in seen:
@@ -325,68 +148,42 @@ def _location_metadata(chunk: Chunk, parsed: ParsedDocument) -> Dict[str, Any]:
     if kind == "page":
         meta["page_start"] = seen[0] if seen else ""
         meta["page_end"] = seen[-1] if seen else ""
-        if not seen:
-            loc = f"lines {chunk.line_start}-{chunk.line_end}"
-        elif len(seen) == 1:
-            loc = f"page {seen[0]}"
-        else:
-            loc = f"pages {seen[0]}-{seen[-1]}"
+        loc = (
+            f"page {seen[0]}" if len(seen) == 1
+            else (f"pages {seen[0]}–{seen[-1]}" if seen
+                  else f"lines {chunk.line_start}–{chunk.line_end}")
+        )
     elif kind == "row":
         loc = (
             f"row {seen[0]}" if len(seen) == 1
-            else (f"rows {seen[0]}-{seen[-1]}" if seen else f"lines {chunk.line_start}-{chunk.line_end}")
+            else (f"rows {seen[0]}–{seen[-1]}" if seen
+                  else f"lines {chunk.line_start}–{chunk.line_end}")
         )
     elif kind == "paragraph":
         loc = (
             f"paragraph {seen[0]}" if len(seen) == 1
-            else (f"paragraphs {seen[0]}-{seen[-1]}" if seen else f"lines {chunk.line_start}-{chunk.line_end}")
+            else (f"paragraphs {seen[0]}–{seen[-1]}" if seen
+                  else f"lines {chunk.line_start}–{chunk.line_end}")
         )
     elif kind == "chapter":
         loc = (
             f"chapter {seen[0]}" if len(seen) == 1
-            else (f"chapters {seen[0]}-{seen[-1]}" if seen else f"lines {chunk.line_start}-{chunk.line_end}")
+            else (f"chapters {seen[0]}–{seen[-1]}" if seen
+                  else f"lines {chunk.line_start}–{chunk.line_end}")
         )
     else:
-        loc = f"lines {chunk.line_start}-{chunk.line_end}"
+        loc = f"lines {chunk.line_start}–{chunk.line_end}"
 
     meta["loc"] = loc
     return meta
 
 
-# ---------------------------------------------------------------------------
-# YAML front-matter
-# ---------------------------------------------------------------------------
-
-
-def extract_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
-    """Parse YAML front-matter from a Markdown string."""
-    pattern = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
-    match = pattern.match(text)
-    if not match:
-        return {}, text
-    try:
-        metadata = yaml.safe_load(match.group(1)) or {}
-        if not isinstance(metadata, dict):
-            metadata = {}
-    except yaml.YAMLError as exc:
-        logger.warning("YAML front-matter parse error: %s", exc)
-        metadata = {}
-    body = text[match.end():]
-    return metadata, body
-
-
-def _mtime_hash(path: Path) -> str:
-    mtime = path.stat().st_mtime
-    return hashlib.md5(f"{path}:{mtime}".encode()).hexdigest()  # noqa: S324
-
-
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # FileIndexer
-# ---------------------------------------------------------------------------
-
+# ─────────────────────────────────────────────────────────────────────────────
 
 class FileIndexer:
-    """Indexes files from a local directory into ChromaDB + BM25."""
+    """Indexes files from local directories into ChromaDB + BM25."""
 
     def __init__(
         self,
@@ -399,16 +196,15 @@ class FileIndexer:
         self.bm25_index = bm25_index
         self._hash_cache: Dict[str, str] = {}
 
-    # ------------------------------------------------------------------
-    # Public async API
-    # ------------------------------------------------------------------
+    # ── Public async API ──────────────────────────────────────────────────────
 
     async def preload_hashes(self, paths: List[Path]) -> None:
+        """Pre-load mtime hashes from ChromaDB in batched queries."""
         if not paths:
             return
         str_paths = [str(p.resolve()) for p in paths]
         _BATCH = 500
-        batches = [str_paths[i : i + _BATCH] for i in range(0, len(str_paths), _BATCH)]
+        batches = [str_paths[i: i + _BATCH] for i in range(0, len(str_paths), _BATCH)]
         for batch_num, batch in enumerate(batches):
             try:
                 results = await asyncio.to_thread(
@@ -422,12 +218,9 @@ class FileIndexer:
                     include=["metadatas"],
                 )
             except Exception as exc:
-                logger.warning(
-                    "Batch hash preload failed (batch %d/%d): %s",
-                    batch_num + 1, len(batches), exc,
-                )
+                logger.warning("Hash preload failed (batch %d/%d): %s", batch_num + 1, len(batches), exc)
                 continue
-            for meta in (results.get("metadatas") or []):
+            for meta in results.get("metadatas") or []:
                 if isinstance(meta, dict):
                     fp = meta.get("file_path", "")
                     h = meta.get("mtime_hash", "")
@@ -437,43 +230,57 @@ class FileIndexer:
         logger.debug("Preloaded %d mtime hashes in %d batch(es)", len(self._hash_cache), len(batches))
 
     async def index_file(self, path: Path) -> int:
+        """Index one file. Returns number of new chunks (0 = skipped/unchanged)."""
         path = path.resolve()
         ext = path.suffix.lower()
         current_hash = _mtime_hash(path)
 
-        stored_hash = self._hash_cache.get(str(path))
-        if stored_hash is None:
-            unchanged = await asyncio.to_thread(self._is_unchanged, path, current_hash)
+        # Check mtime cache
+        stored = self._hash_cache.get(str(path))
+        if stored is not None:
+            if stored == current_hash:
+                logger.debug("Skipping unchanged: %s", path)
+                return 0
         else:
-            unchanged = stored_hash == current_hash
-        if unchanged:
-            logger.debug("Skipping unchanged file: %s", path)
-            return 0
+            unchanged = await asyncio.to_thread(self._is_unchanged, path, current_hash)
+            if unchanged:
+                logger.debug("Skipping unchanged: %s", path)
+                return 0
 
         logger.info("Indexing: %s", path.name)
 
+        # Parse
         parser = parser_registry.get(ext)
         try:
             parsed: ParsedDocument = await asyncio.to_thread(parser.parse, path)
         except ImportError as exc:
-            logger.warning("Skipping %s — missing dependency: %s", path.name, exc)
+            logger.warning("Skipping %s — missing dep: %s", path.name, exc)
+            return 0
+        except Exception as exc:
+            logger.error("Parse error %s: %s", path.name, exc)
             return 0
 
-        # Markdown front-matter (operate on parsed.text)
+        # Strip Markdown front-matter
         frontmatter: Dict[str, Any] = {}
         if ext in (".md", ".markdown"):
-            frontmatter, body = extract_frontmatter(parsed.text)
+            frontmatter, body = _extract_frontmatter(parsed.text)
             if body != parsed.text:
-                # Strip equivalent number of leading lines from the labels array.
-                stripped_lines = parsed.text.splitlines()[: len(parsed.text.splitlines()) - len(body.splitlines())]
-                offset = len(stripped_lines)
+                offset = len(parsed.text.splitlines()) - len(body.splitlines())
                 parsed = ParsedDocument(
                     text=body,
                     line_labels=parsed.line_labels[offset:] if parsed.line_labels else [],
                     label_kind=parsed.label_kind,
                 )
 
-        chunks = chunk_for_extension(parsed, ext, self.config.chunk_size, self.config.chunk_overlap)
+        # Chunk — dispatch to type-aware chunker
+        chunks = chunk_document(
+            parsed=parsed,
+            extension=ext,
+            chunk_size=self.config.chunk_size,
+            overlap=self.config.chunk_overlap,
+            code_chunk_size=self.config.chunk_size_code,
+            data_chunk_size=self.config.chunk_size_data,
+        )
         if not chunks:
             logger.warning("No usable text in %s — skipping", path)
             return 0
@@ -487,9 +294,13 @@ class FileIndexer:
         metadatas: List[Dict[str, Any]] = []
 
         for batch_start in range(0, total_chunks, batch_size):
-            batch = chunks[batch_start : batch_start + batch_size]
+            batch = chunks[batch_start: batch_start + batch_size]
             batch_texts = [c.text for c in batch]
-            batch_embeddings = await get_embeddings_batch(batch_texts)
+            try:
+                batch_embeddings = await get_embeddings_batch(batch_texts)
+            except Exception as exc:
+                logger.error("Embedding failed for %s batch %d: %s", path.name, batch_start, exc)
+                continue
 
             for i, (chunk, embedding) in enumerate(zip(batch, batch_embeddings)):
                 chunk_index = batch_start + i
@@ -507,7 +318,10 @@ class FileIndexer:
                 documents.append(chunk.text)
                 metadatas.append(meta)
 
-        # Replace any old chunks (file may now have fewer chunks than before).
+        if not ids:
+            return 0
+
+        # Replace old chunks for this file
         await asyncio.to_thread(self.collection.delete, where={"file_path": str(path)})
         await asyncio.to_thread(
             self.collection.upsert,
@@ -531,23 +345,33 @@ class FileIndexer:
         return total_chunks
 
     async def index_directory(self, directory: Path, progress_fn=None) -> Dict[str, Any]:
+        """Recursively index all supported files in directory."""
         directory = directory.resolve()
         if not directory.exists():
             raise FileNotFoundError(f"Directory not found: {directory}")
 
         supported = set(self.config.extensions)
-        files = [
-            p for p in directory.rglob("*")
-            if p.is_file() and p.suffix.lower() in supported
-        ]
+
+        # Collect files, applying exclusion filters
+        files: List[Path] = []
+        skipped_dirs: set[str] = set()
+        for p in directory.rglob("*"):
+            if not p.is_file():
+                continue
+            if p.suffix.lower() not in supported:
+                continue
+            reason = _should_skip(p, self.config)
+            if reason:
+                skipped_dirs.add(reason)
+                continue
+            files.append(p)
+
+        if skipped_dirs:
+            logger.info("Exclusions applied (%d unique reasons)", len(skipped_dirs))
 
         total = len(files)
-        indexed = 0
-        skipped = 0
-        failed = 0
-        chunks_total = 0
+        indexed = skipped = failed = chunks_total = 0
 
-        # Notify caller of total before we start so UI can show N/M immediately
         if progress_fn:
             progress_fn({
                 "current_file": "", "files_done": 0, "total": total,
@@ -572,15 +396,20 @@ class FileIndexer:
                 failed += 1
 
             if progress_fn:
+                done = indexed + skipped + failed
+                elapsed = time.monotonic() - start_time
+                rate = done / elapsed if elapsed > 0 and done > 0 else 0
+                eta = (total - done) / rate if rate > 0 and total > done else 0
                 progress_fn({
                     "current_file": file_path.name,
-                    "files_done": indexed + skipped + failed,
+                    "files_done": done,
                     "total": total,
                     "indexed": indexed,
                     "skipped": skipped,
                     "failed": failed,
                     "chunks": chunks_total,
-                    "elapsed": time.monotonic() - start_time,
+                    "elapsed": round(elapsed, 1),
+                    "eta": round(eta, 1),
                     "new_file": file_path.name if new_chunks > 0 else None,
                 })
 
@@ -600,11 +429,9 @@ class FileIndexer:
         if self.bm25_index is not None:
             await asyncio.to_thread(self.bm25_index.delete_file, str(path))
         self._hash_cache.pop(str(path), None)
-        logger.info("Deleted all chunks for %s", path)
+        logger.info("Deleted chunks for %s", path)
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
+    # ── Private helpers ───────────────────────────────────────────────────────
 
     def _build_metadata(
         self,
@@ -628,9 +455,19 @@ class FileIndexer:
             "indexed_at": datetime.now(tz=timezone.utc).isoformat(),
             "source": path.parent.name,
             "mtime_hash": mtime_hash,
+            # Rich chunk metadata
+            "chunk_type": chunk.chunk_type,
+            "symbol_name": chunk.symbol_name or "",
+            "heading_path": chunk.heading_path or "",
+            # Context window for retrieval expansion (not indexed, used at query time)
+            "context_before": chunk.context_before or "",
+            "context_after": chunk.context_after or "",
         }
+
+        # Location metadata (page / line / row / paragraph citations)
         meta.update(_location_metadata(chunk, parsed))
 
+        # Markdown front-matter fields
         _primitive = (str, int, float, bool)
         for key, value in frontmatter.items():
             safe_key = str(key)
@@ -640,6 +477,12 @@ class FileIndexer:
                 meta[safe_key] = ""
             else:
                 meta[safe_key] = str(value)
+
+        # Extra meta from chunker (language, class name, etc.)
+        for key, value in chunk.extra_meta.items():
+            if isinstance(value, _primitive):
+                meta[f"chunk_{key}"] = value
+
         return meta
 
     def _is_unchanged(self, path: Path, current_hash: str) -> bool:
