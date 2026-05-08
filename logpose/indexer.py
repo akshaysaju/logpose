@@ -393,10 +393,12 @@ class FileIndexer:
         config: Settings,
         collection: chromadb.Collection,
         bm25_index: Optional[BM25Index] = None,
+        graph=None,  # DocumentGraph — used by Unit C
     ) -> None:
         self.config = config
         self.collection = collection
         self.bm25_index = bm25_index
+        self.graph = graph
         self._hash_cache: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
@@ -506,6 +508,22 @@ class FileIndexer:
                 embeddings.append(embedding)
                 documents.append(chunk.text)
                 metadatas.append(meta)
+
+        # Enrich chunks with LLM-extracted metadata (if enabled)
+        if self.config.enrich_enabled and documents:
+            from .enricher import enrich_chunks
+            enrich_batch = self.config.enrich_batch_size
+            try:
+                for ei in range(0, len(documents), enrich_batch):
+                    ebatch_texts = documents[ei: ei + enrich_batch]
+                    ebatch_results = await enrich_chunks(ebatch_texts)
+                    for j, er in enumerate(ebatch_results):
+                        if ei + j < len(metadatas):
+                            metadatas[ei + j]["entities"] = er.entities
+                            metadatas[ei + j]["topics"] = er.topics
+                            metadatas[ei + j]["keywords"] = er.keywords
+            except Exception as exc:
+                logger.warning("Enrichment failed for %s: %s — continuing without", path.name, exc)
 
         # Replace any old chunks (file may now have fewer chunks than before).
         await asyncio.to_thread(self.collection.delete, where={"file_path": str(path)})

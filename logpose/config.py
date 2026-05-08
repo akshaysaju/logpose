@@ -96,6 +96,16 @@ class Settings(BaseSettings):
     ocr_dpi: int = 200
     "DPI used when rendering PDF pages for OCR. 200 is a good speed/quality compromise."
 
+    # --- Metadata Enrichment ───────────────────────────────────────────────
+    enrich_enabled: bool = False
+    "LLM extracts entities, topics, keywords from chunks at index time. LOGPOSE_ENRICH_ENABLED"
+
+    enrich_model: str = "qwen3.5:0.8b"
+    "Ollama model for enrichment. LOGPOSE_ENRICH_MODEL"
+
+    enrich_batch_size: int = 5
+    "Chunks per LLM call. LOGPOSE_ENRICH_BATCH_SIZE"
+
     # --- Misc --------------------------------------------------------------
     embed_batch_size: int = 10
     "Number of chunks to embed per Ollama API call batch."
