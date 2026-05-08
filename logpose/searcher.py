@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 
 _RRF_K = 60
 
+# Pre-compiled pattern to strip Qwen3 chain-of-thought blocks before parsing scores.
+import re as _re
+_THINK_RE = _re.compile(r"<think>.*?</think>", _re.DOTALL)
+
 
 # ---------------------------------------------------------------------------
 # Result dataclass
@@ -150,6 +154,7 @@ class FileSearcher:
         deduplicate: bool = True,
         rerank: Optional[bool] = None,
         bm25_query: Optional[str] = None,
+        use_self_rag: Optional[bool] = None,
     ) -> List[SearchResult]:
         """Search the corpus with hybrid retrieval and optional reranking.
 
@@ -191,6 +196,11 @@ class FileSearcher:
         use_reranker = self.config.enable_reranker if rerank is None else rerank
         if use_reranker and merged:
             merged = await self._rerank(query, merged)
+
+        # Self-RAG relevance gating (after rerank, before dedup)
+        do_self_rag = self.config.self_rag_enabled if use_self_rag is None else use_self_rag
+        if do_self_rag and merged:
+            merged = await self._self_rag_filter(query, merged)
 
         if deduplicate:
             merged = self._deduplicate(merged)
@@ -268,6 +278,82 @@ class FileSearcher:
         rescored.sort(key=lambda x: x.score, reverse=True)
         # Tail keeps fused scores (much smaller numerically) — stable suffix.
         return rescored + tail
+
+    async def _self_rag_filter(
+        self,
+        query: str,
+        results: List[SearchResult],
+    ) -> List[SearchResult]:
+        """Self-RAG: score top results for relevance to query, filter low-scoring chunks.
+
+        Only scores the top 10 results (latency control). Always passes at least
+        self_rag_min_pass chunks regardless of score to prevent empty results.
+        """
+        import httpx
+
+        top_k = min(10, len(results))
+        head = results[:top_k]
+        tail = results[top_k:]
+
+        url = f"{self.config.ollama_base_url.rstrip('/')}/api/chat"
+
+        async def _score_chunk(client: httpx.AsyncClient, chunk_text: str) -> float:
+            prompt = (
+                "/no_think\n"
+                "Rate how relevant this passage is to answering the query.\n"
+                "Reply with ONLY a single decimal number between 0.0 and 1.0.\n"
+                "0.0 = completely irrelevant, 1.0 = directly answers the query.\n\n"
+                f"Query: {query}\n\n"
+                f"Passage: {chunk_text[:500]}\n\n"
+                "Score:"
+            )
+            try:
+                resp = await client.post(url, json={
+                    "model": self.config.self_rag_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "options": {"num_predict": 10, "temperature": 0.0},
+                })
+                resp.raise_for_status()
+                raw = resp.json()["message"]["content"].strip()
+                cleaned = _THINK_RE.sub("", raw).strip()
+                m = _re.search(r"(\d+\.?\d*)", cleaned)
+                if m:
+                    return max(0.0, min(1.0, float(m.group(1))))
+            except Exception as exc:
+                logger.debug("Self-RAG scoring failed: %s", exc)
+            return 1.0  # Fail-open: keep chunk if scoring fails
+
+        # One shared client for all concurrent chunk-scoring requests.
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            scores = await asyncio.gather(
+                *[_score_chunk(client, r.chunk_text) for r in head]
+            )
+
+        threshold = self.config.self_rag_threshold
+        min_pass = self.config.self_rag_min_pass
+
+        # Sort by score descending so min_pass keeps the highest-scoring chunks.
+        scored = sorted(zip(scores, head), key=lambda x: x[0], reverse=True)
+
+        passed_keys: set[str] = set()
+        for i, (score, result) in enumerate(scored):
+            if score >= threshold or i < min_pass:
+                passed_keys.add(_chunk_key(result))
+
+        # Preserve original ranking order; update score to self-rag score.
+        score_map = {_chunk_key(r): s for s, r in zip(scores, head)}
+        ordered = [
+            replace(r, score=round(score_map[_chunk_key(r)], 4))
+            for r in head
+            if _chunk_key(r) in passed_keys
+        ]
+
+        logger.debug(
+            "Self-RAG: %d/%d chunks passed (threshold=%.2f)",
+            len(ordered), top_k, threshold,
+        )
+        return ordered + tail
 
     # ------------------------------------------------------------------
     # RRF

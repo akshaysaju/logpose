@@ -96,6 +96,19 @@ class Settings(BaseSettings):
     ocr_dpi: int = 200
     "DPI used when rendering PDF pages for OCR. 200 is a good speed/quality compromise."
 
+    # --- Self-RAG Relevance Gating -----------------------------------------
+    self_rag_enabled: bool = False
+    "Score chunks for relevance, filter below threshold. LOGPOSE_SELF_RAG_ENABLED"
+
+    self_rag_threshold: float = 0.6
+    "Chunks scoring below this (0.0–1.0) are filtered. LOGPOSE_SELF_RAG_THRESHOLD"
+
+    self_rag_min_pass: int = 3
+    "Always keep at least this many chunks. LOGPOSE_SELF_RAG_MIN_PASS"
+
+    self_rag_model: str = "qwen3:0.6b"
+    "Model for relevance scoring. LOGPOSE_SELF_RAG_MODEL"
+
     # --- Misc --------------------------------------------------------------
     embed_batch_size: int = 10
     "Number of chunks to embed per Ollama API call batch."

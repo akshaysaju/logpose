@@ -120,6 +120,8 @@ def api_stats():
             "chunk_overlap": settings.chunk_overlap,
             "ocr_enabled": settings.enable_ocr,
             "ocr_min_chars": settings.ocr_min_chars_per_page,
+            "self_rag_enabled": settings.self_rag_enabled,
+            "self_rag_threshold": settings.self_rag_threshold,
         }
         if total_chunks == 0:
             return jsonify({**base, "total_chunks": 0, "total_files": 0,
@@ -248,6 +250,7 @@ def api_search():
     n = min(int(request.args.get("n", 10)), 20)
     types_raw = request.args.get("types", "")
     source = request.args.get("source", "") or None
+    use_self_rag = request.args.get("self_rag", "").lower() in ("1", "true", "yes")
 
     exts = [t.strip() for t in types_raw.split(",") if t.strip()] if types_raw else []
     # Semantic search uses the full natural-language query (model handles intent well).
@@ -262,7 +265,8 @@ def api_search():
             for ext in exts:
                 rs = _run_async(_searcher.search(query=q, n_results=n,
                                                  filter_extension=ext, filter_source=source,
-                                                 bm25_query=q_bm25))
+                                                 bm25_query=q_bm25,
+                                                 use_self_rag=use_self_rag or None))
                 for r in rs:
                     k = f"{r.file_path}::{r.chunk_index}"
                     if k not in seen:
@@ -271,7 +275,8 @@ def api_search():
         else:
             results = _run_async(_searcher.search(query=q, n_results=n,
                                                   filter_extension=None, filter_source=source,
-                                                  bm25_query=q_bm25))
+                                                  bm25_query=q_bm25,
+                                                  use_self_rag=use_self_rag or None))
     except Exception as exc:
         logger.exception("search failed q=%r", q)
         return jsonify({"error": str(exc)}), 500
