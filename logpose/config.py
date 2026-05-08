@@ -103,6 +103,56 @@ class Settings(BaseSettings):
     auto_index_on_start: bool = False
     "If True, automatically index all corpus_dirs when the server starts."
 
+    # --- Metadata Enrichment -----------------------------------------------
+    enrich_enabled: bool = False
+    """LLM extracts entities, topics, and keywords from each chunk at index time.
+    Enable: LOGPOSE_ENRICH_ENABLED=true
+    Adds latency during indexing; enriched metadata improves search filtering and UI.
+    """
+
+    enrich_model: str = "qwen3.5:0.8b"
+    "Ollama model for metadata enrichment. Fast model recommended (0.8b or similar)."
+
+    enrich_batch_size: int = 5
+    "Number of chunks to enrich per LLM call. Higher = fewer calls but larger prompt."
+
+    # --- Document Relationship Graph ---------------------------------------
+    graph_enabled: bool = False
+    """Build a document relationship graph at index time.
+    Tracks imports, citations, and shared-entity links between files.
+    Enable: LOGPOSE_GRAPH_ENABLED=true
+    At query time, related files' chunks are appended to results.
+    """
+
+    # --- Self-RAG Relevance Gating -----------------------------------------
+    self_rag_enabled: bool = False
+    """Self-RAG: score retrieved chunks for relevance before sending to LLM.
+    Filters low-relevance chunks to reduce noise in the context window.
+    Enable: LOGPOSE_SELF_RAG_ENABLED=true
+    """
+
+    self_rag_threshold: float = 0.6
+    "Chunks scoring below this relevance score (0.0–1.0) are filtered out."
+
+    self_rag_min_pass: int = 3
+    "Always keep at least this many chunks even if all score below threshold."
+
+    self_rag_model: str = "qwen3.5:0.8b"
+    "Ollama model used for Self-RAG relevance scoring."
+
+    # --- Agentic RAG -------------------------------------------------------
+    agent_enabled: bool = False
+    """Agentic RAG: LLM agent with tools (search, get_file, filter) iterates up to
+    max_steps before producing a final answer. Best for multi-hop questions.
+    Enable: LOGPOSE_AGENT_ENABLED=true
+    """
+
+    agent_model: str = "qwen3.5:4b"
+    "Ollama model for the RAG agent loop. Needs sufficient reasoning ability."
+
+    agent_max_steps: int = 5
+    "Maximum tool-call iterations the agent may take before forced answer."
+
     # Derived lists populated by _post_init — treat as read-only.
     _extensions_list: List[str] = []
     _corpus_dirs_list: List[Path] = []
@@ -148,6 +198,11 @@ class Settings(BaseSettings):
     @property
     def ollama_embed_url(self) -> str:
         return f"{self.ollama_base_url.rstrip('/')}/api/embed"
+
+    @property
+    def graph_db_path(self) -> str:
+        """Absolute path to the SQLite document-graph database."""
+        return str(self.chroma_dir / "graph.db")
 
 
 # Module-level singleton — import this everywhere else.
