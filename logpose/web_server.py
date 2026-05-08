@@ -56,7 +56,18 @@ _collection = _client.get_or_create_collection(
     metadata={"hnsw:space": "cosine"},
 )
 _bm25 = BM25Index(settings.bm25_db_path)
-_searcher = FileSearcher(settings, _collection, _bm25)
+
+# ── Document graph (lazy init) ─────────────────────────────────────────────────
+_graph = None
+if settings.graph_enabled:
+    try:
+        from logpose.graph import DocumentGraph as _DocumentGraph
+        _graph = _DocumentGraph(settings.graph_db_path)
+        logger.info("Document graph enabled: %s", settings.graph_db_path)
+    except Exception as _graph_exc:
+        logger.warning("Document graph init failed: %s — graph disabled", _graph_exc)
+
+_searcher = FileSearcher(settings, _collection, _bm25, graph=_graph)
 logger.info(
     "ChromaDB collection '%s' opened (%d items)",
     settings.collection_name,
@@ -299,6 +310,10 @@ def api_search():
             "mod": _fmt_date(r.metadata.get("modified_at", "")),
             "snippet_raw": _format_snippet(r.chunk_text, q),
             "chunk_text": r.chunk_text,
+            "metadata": {
+                k: v for k, v in r.metadata.items()
+                if k in ("entities", "topics", "keywords")
+            },
         })
 
     return jsonify({"query": q, "results": out, "total": len(out), "duration_ms": elapsed_ms})
@@ -438,6 +453,27 @@ def api_status():
         return jsonify({"error": str(exc)}), 500
 
 
+# ── /api/health ───────────────────────────────────────────────────────────────
+@app.route("/api/health")
+def api_health():
+    return jsonify({"ok": True, "chunks": _collection.count()})
+
+
+# ── /api/graph ────────────────────────────────────────────────────────────────
+@app.route("/api/graph")
+def api_graph():
+    """Return document relationship graph data for D3 visualization."""
+    if _graph is None:
+        return jsonify({"nodes": [], "edges": [], "enabled": False})
+    try:
+        data = _graph.get_graph_data()
+        data["enabled"] = True
+        return jsonify(data)
+    except Exception as exc:
+        logger.exception("api_graph failed")
+        return jsonify({"error": str(exc)}), 500
+
+
 # ── /api/index + /api/index-status ───────────────────────────────────────────
 _index_job: dict = {
     "running": False, "message": "idle",
@@ -453,7 +489,7 @@ _index_job: dict = {
 def _run_index_dirs(dirs: list):
     """Index a list of directories, pushing live progress into _index_job."""
     from logpose.indexer import FileIndexer
-    indexer = FileIndexer(settings, _collection, _bm25)
+    indexer = FileIndexer(config=settings, collection=_collection, bm25_index=_bm25, graph=_graph)
     _index_job.update({
         "running": True, "message": "scanning…",
         "files": 0, "files_done": 0,

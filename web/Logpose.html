@@ -159,6 +159,33 @@ if (!document.getElementById('lp-styles')) {
       0%{transform:translateX(-100%);width:35%}
       50%{transform:translateX(150%);width:45%}
       100%{transform:translateX(300%);width:35%}}
+    .result-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+    .badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:500}
+    .badge-topic{background:#e8f4fd;color:#1a6fa8;border:1px solid #bee3f8}
+    .badge-entity{background:#f0fff4;color:#276749;border:1px solid #9ae6b4}
+    .toggle-label{display:inline-flex;align-items:center;gap:6px;cursor:pointer;
+      font-size:12px;color:#8A8A8A;user-select:none}
+    .toggle-label input[type=checkbox]{accent-color:#FF9F1C;width:14px;height:14px}
+    .toggle-hint{font-size:12px;color:#5A5A5A;cursor:help}
+    .agent-answer-card{background:#f7f3ff;border:1px solid #d6bcfa;border-radius:8px;padding:16px;margin-bottom:16px}
+    .agent-answer-header{font-weight:700;color:#553c9a;margin-bottom:8px;font-size:14px}
+    .agent-answer-body{color:#2d3748;line-height:1.6;white-space:pre-wrap}
+    .agent-citations{margin-top:10px;font-size:13px;color:#4a5568}
+    .agent-citations ul{margin:4px 0 0 16px;padding:0}
+    .agent-trace{margin-top:10px}
+    .agent-trace summary{cursor:pointer;color:#553c9a;font-size:13px}
+    .agent-trace pre{background:#1a202c;color:#e2e8f0;padding:10px;border-radius:4px;font-size:11px;overflow-x:auto;margin-top:6px;white-space:pre-wrap}
+    .graph-panel{background:#f8f8f8;border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin-top:16px}
+    .graph-title{font-weight:600;color:#2d3748;margin-bottom:10px}
+    .graph-edge{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px}
+    .graph-node{color:#2b6cb0;font-family:monospace}
+    .graph-rel{padding:1px 6px;border-radius:10px;font-size:11px;font-weight:500}
+    .graph-rel-import{background:#ebf8ff;color:#2c5282}
+    .graph-rel-citation{background:#fffff0;color:#744210}
+    .graph-rel-shared_entity{background:#f0fff4;color:#276749}
+    .graph-toggle-btn{background:none;border:1px solid #e2e8f0;border-radius:6px;padding:6px 14px;
+      cursor:pointer;color:#4a5568;font-size:13px;margin-top:12px}
+    .graph-toggle-btn:hover{background:#f7fafc}
   `;
   document.head.appendChild(s);
 }
@@ -545,6 +572,16 @@ function ResultCard({ r, active, onOpen, onAskFollowup }) {
             modified {r.mod}
           </div>
           <Snippet parts={r.snippet} mono={r.kind === "code" || r.kind === "xlsx"} />
+          {r.metadata && (r.metadata.entities || r.metadata.topics) && (
+            <div className="result-badges">
+              {r.metadata.topics && r.metadata.topics.split(', ').slice(0, 3).map(topic => (
+                <span key={topic} className="badge badge-topic">{topic}</span>
+              ))}
+              {r.metadata.entities && r.metadata.entities.split(', ').slice(0, 4).map(entity => (
+                <span key={entity} className="badge badge-entity">{entity}</span>
+              ))}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
             <button className="lp-row-btn" onClick={openFile}><Icon.external size={12}/> {opened ? "Opened!" : "Open file"}</button>
             <button className="lp-row-btn" onClick={copyPath}><Icon.copy size={12}/> {copied ? "Copied!" : "Copy path"}</button>
@@ -643,14 +680,14 @@ function FilterRail({ rerank, setRerank, activeTypes, setActiveTypes, activeFold
   );
 }
 
-function SearchTopBar({ query, onSearch }) {
+function SearchTopBar({ query, onSearch, selfRagEnabled, setSelfRagEnabled, agentMode, setAgentMode }) {
   const [val, setVal] = React.useState(query || "");
   React.useEffect(() => setVal(query || ""), [query]);
   const submit = () => { const q = val.trim(); if (q && onSearch) onSearch(q); };
   return (
     <div style={{ flexShrink: 0, background: LP.bg, borderBottom: `1px solid ${LP.rule}`,
-      padding: "12px 24px", display: "flex", alignItems: "center", gap: 16, zIndex: 4 }}>
-      <div style={{ flex: 1, position: "relative", maxWidth: 640 }}>
+      padding: "12px 24px", display: "flex", alignItems: "center", gap: 16, zIndex: 4, flexWrap: "wrap" }}>
+      <div style={{ flex: 1, position: "relative", maxWidth: 640, minWidth: 200 }}>
         <div style={{ height: 40, borderRadius: 6, border: `1px solid ${LP.rule2}`,
           background: "#0E0E0E", display: "flex", alignItems: "center", padding: "0 12px", gap: 10 }}>
           <Icon.search size={15} stroke={LP.muted} />
@@ -665,7 +702,17 @@ function SearchTopBar({ query, onSearch }) {
           </span>
         </div>
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 14, fontSize: 11, color: LP.muted }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+        <label className="toggle-label">
+          <input type="checkbox" checked={selfRagEnabled} onChange={e => setSelfRagEnabled(e.target.checked)} />
+          <span>Self-RAG</span>
+          <span className="toggle-hint" title="Score chunks for relevance, filter low-quality results">ⓘ</span>
+        </label>
+        <label className="toggle-label">
+          <input type="checkbox" checked={agentMode} onChange={e => setAgentMode(e.target.checked)} />
+          <span>🤖 Agent Mode</span>
+          <span className="toggle-hint" title="Multi-step AI agent iterates to find better answers">ⓘ</span>
+        </label>
         <StatusRow />
       </div>
     </div>
@@ -859,6 +906,11 @@ function SearchResults() {
   const [activeFolder, setActiveFolder] = React.useState("All folders");
   const [chatTarget, setChatTarget] = React.useState(null);
   const [chatExpanded, setChatExpanded] = React.useState(false);
+  const [selfRagEnabled, setSelfRagEnabled] = React.useState(false);
+  const [agentMode, setAgentMode] = React.useState(false);
+  const [agentResult, setAgentResult] = React.useState(null);
+  const [showGraph, setShowGraph] = React.useState(false);
+  const [graphData, setGraphData] = React.useState(null);
 
   const extMap = {
     PDF: [".pdf"], DOCX: [".docx", ".doc"],
@@ -866,36 +918,68 @@ function SearchResults() {
     XLSX: [".xlsx", ".xls"], Markdown: [".md", ".markdown"], EPUB: [".epub"],
   };
 
-  const doSearch = React.useCallback(async (q, types, folder) => {
+  const loadGraph = async () => {
+    if (graphData) return;
+    try {
+      const resp = await fetch(`${API_BASE}/api/graph`);
+      const data = await resp.json();
+      setGraphData(data);
+    } catch (e) { console.error('Graph load failed', e); }
+  };
+
+  const doSearch = React.useCallback(async (q, types, folder, useSelfRag, useAgent) => {
     if (!q || !q.trim()) {
       setResults([]);
       setSearchError(null);
+      setAgentResult(null);
       setLoading(false);
       return;
     }
     setLoading(true);
     setSearchError(null);
+    setAgentResult(null);
     try {
-      const exts = (types || []).flatMap(t => extMap[t] || []);
-      const typesParam = exts.length ? `&types=${exts.join(",")}` : "";
-      const srcParam = (folder && folder !== "All folders") ? `&source=${encodeURIComponent(folder)}` : "";
-      const r = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(q)}&n=10${typesParam}${srcParam}`);
-      if (!r.ok) {
-        const errData = await r.json().catch(() => ({}));
-        setSearchError(errData.error || `Server error ${r.status} — Ollama may be busy`);
-        setLoading(false);
-        return;
-      }
-      const data = await r.json();
-      if (data.results) {
+      if (useAgent) {
+        const r = await fetch(`${API_BASE}/api/agent-search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: q }),
+        });
+        if (!r.ok) {
+          const errData = await r.json().catch(() => ({}));
+          setSearchError(errData.error || `Agent search error ${r.status}`);
+          setLoading(false);
+          return;
+        }
+        const data = await r.json();
+        setAgentResult(data);
         setLive(true);
-        setResults(data.results.map(r => ({
-          id: r.id, kind: r.kind, file: r.file, path: r.path,
-          cite: r.cite, score: r.score, mod: r.mod,
-          snippet: parseSnippet(r.snippet_raw),
-          chunk_text: r.chunk_text || "",
-        })));
-        setDurationMs(data.duration_ms);
+        setResults([]);
+        setDurationMs(null);
+      } else {
+        const exts = (types || []).flatMap(t => extMap[t] || []);
+        const typesParam = exts.length ? `&types=${exts.join(",")}` : "";
+        const srcParam = (folder && folder !== "All folders") ? `&source=${encodeURIComponent(folder)}` : "";
+        const selfRagParam = useSelfRag ? "&self_rag=1" : "";
+        const r = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(q)}&n=10${typesParam}${srcParam}${selfRagParam}`);
+        if (!r.ok) {
+          const errData = await r.json().catch(() => ({}));
+          setSearchError(errData.error || `Server error ${r.status} — Ollama may be busy`);
+          setLoading(false);
+          return;
+        }
+        const data = await r.json();
+        if (data.results) {
+          setLive(true);
+          setResults(data.results.map(r => ({
+            id: r.id, kind: r.kind, file: r.file, path: r.path,
+            cite: r.cite, score: r.score, mod: r.mod,
+            snippet: parseSnippet(r.snippet_raw),
+            chunk_text: r.chunk_text || "",
+            metadata: r.metadata || {},
+          })));
+          setDurationMs(data.duration_ms);
+        }
       }
     } catch(e) {
       if (e.name !== 'TypeError') setSearchError("Cannot reach server — start aether-logpose-ui");
@@ -903,16 +987,16 @@ function SearchResults() {
     finally { setLoading(false); }
   }, []);
 
-  React.useEffect(() => { doSearch(query, [], "All folders"); }, [doSearch]);
+  React.useEffect(() => { doSearch(query, [], "All folders", false, false); }, [doSearch]);
 
-  const handleSearch = (q) => { setQuery(q); doSearch(q, activeTypes, activeFolder); };
+  const handleSearch = (q) => { setQuery(q); doSearch(q, activeTypes, activeFolder, selfRagEnabled, agentMode); };
   const handleTypesChange = (types) => {
     setActiveTypes(types);
-    if (query) doSearch(query, types, activeFolder);
+    if (query) doSearch(query, types, activeFolder, selfRagEnabled, agentMode);
   };
   const handleFolderChange = (folder) => {
     setActiveFolder(folder);
-    if (query) doSearch(query, activeTypes, folder);
+    if (query) doSearch(query, activeTypes, folder, selfRagEnabled, agentMode);
   };
 
   const activeResult = active ? results.find(r => r.id === active) : null;
@@ -923,7 +1007,9 @@ function SearchResults() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
       {/* Top search bar \u2014 always visible */}
-      <SearchTopBar query={query} onSearch={handleSearch} />
+      <SearchTopBar query={query} onSearch={handleSearch}
+        selfRagEnabled={selfRagEnabled} setSelfRagEnabled={setSelfRagEnabled}
+        agentMode={agentMode} setAgentMode={setAgentMode} />
 
       {/* Body: filter | results | right-panel */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
@@ -959,6 +1045,25 @@ function SearchResults() {
             <button className="lp-pill">Sort: relevance</button>
           </div>
 
+          {agentResult && (
+            <div className="agent-answer-card">
+              <div className="agent-answer-header">\ud83e\udd16 Agent Answer</div>
+              <div className="agent-answer-body">{agentResult.answer}</div>
+              {agentResult.citations && agentResult.citations.length > 0 && (
+                <div className="agent-citations">
+                  <strong>Sources:</strong>
+                  <ul>{agentResult.citations.map((c, i) => <li key={i}>{c.split('/').pop()}</li>)}</ul>
+                </div>
+              )}
+              {agentResult.reasoning_trace && agentResult.reasoning_trace.length > 0 && (
+                <details className="agent-trace">
+                  <summary>Reasoning trace ({agentResult.steps_used} steps)</summary>
+                  <pre>{agentResult.reasoning_trace.join('\n')}</pre>
+                </details>
+              )}
+            </div>
+          )}
+
           {loading && (
             <div style={{ textAlign: "center", padding: "80px 0", color: LP.muted }}>
               <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${LP.rule2}`,
@@ -992,6 +1097,33 @@ function SearchResults() {
               </div>
             )}
           </div>
+
+          <button className="graph-toggle-btn" onClick={() => { setShowGraph(!showGraph); if (!showGraph) loadGraph(); }}>
+            {showGraph ? '\u25b2 Hide Graph' : '\u25bc Show Document Graph'}
+          </button>
+
+          {showGraph && graphData && (
+            graphData.edges && graphData.edges.length > 0 ? (
+              <div className="graph-panel">
+                <div className="graph-title">Document Relationships ({graphData.edges.length} edges)</div>
+                <div className="graph-edges">
+                  {graphData.edges.slice(0, 50).map((edge, i) => (
+                    <div key={i} className="graph-edge">
+                      <span className="graph-node">{edge.source.split('/').pop()}</span>
+                      <span className={`graph-rel graph-rel-${edge.type}`}>{edge.type}</span>
+                      <span className="graph-node">{edge.target.split('/').pop()}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="graph-panel">
+                <div className="graph-title" style={{ color: '#718096', fontWeight: 400 }}>
+                  {graphData.enabled === false ? 'Document graph not enabled.' : 'No document relationships found yet.'}
+                </div>
+              </div>
+            )
+          )}
         </div>
 
         {/* Right panel: preview OR chat \u2014 46% width, non-fixed */}

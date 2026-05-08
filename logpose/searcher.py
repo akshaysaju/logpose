@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import chromadb
@@ -131,10 +132,12 @@ class FileSearcher:
         config: Settings,
         collection: chromadb.Collection,
         bm25_index: Optional[BM25Index] = None,
+        graph=None,  # Optional[DocumentGraph]
     ) -> None:
         self.config = config
         self.collection = collection
         self.bm25_index = bm25_index
+        self.graph = graph
 
     # ------------------------------------------------------------------
     # Public API
@@ -191,6 +194,10 @@ class FileSearcher:
         use_reranker = self.config.enable_reranker if rerank is None else rerank
         if use_reranker and merged:
             merged = await self._rerank(query, merged)
+
+        # Graph-based context expansion
+        if self.graph is not None and self.config.graph_enabled:
+            merged = await self._expand_with_graph(merged)
 
         if deduplicate:
             merged = self._deduplicate(merged)
@@ -268,6 +275,60 @@ class FileSearcher:
         rescored.sort(key=lambda x: x.score, reverse=True)
         # Tail keeps fused scores (much smaller numerically) — stable suffix.
         return rescored + tail
+
+    async def _expand_with_graph(
+        self,
+        results: List[SearchResult],
+    ) -> List[SearchResult]:
+        """
+        Expand results with first-hop graph neighbours.
+
+        For each top result file, finds related files in the document graph,
+        then retrieves their best chunk via semantic search.
+        Appends graph-expanded chunks at slightly reduced score.
+        """
+        if not results:
+            return results
+
+        # Collect related file paths from graph (top 3 results only, avoid explosion)
+        seen_paths = {r.file_path for r in results}
+        related_paths: List[str] = []
+        for r in results[:3]:
+            try:
+                neighbours = await asyncio.to_thread(self.graph.get_related, r.file_path, 1)
+                for fp in neighbours:
+                    if fp not in seen_paths:
+                        seen_paths.add(fp)
+                        related_paths.append(fp)
+            except Exception as exc:
+                logger.debug("Graph expansion lookup failed: %s", exc)
+
+        if not related_paths:
+            return results
+
+        # Fetch first chunk of each related file (fast, no embedding needed)
+        extra: List[SearchResult] = []
+        for fp in related_paths[:5]:  # cap expansion to 5 extra files
+            try:
+                raw = await asyncio.to_thread(
+                    self.collection.get,
+                    where={"$and": [
+                        {"file_path": {"$eq": fp}},
+                        {"chunk_index": {"$eq": 0}},
+                    ]},
+                    include=["documents", "metadatas"],
+                    limit=1,
+                )
+                docs = (raw.get("documents") or [])
+                metas = (raw.get("metadatas") or [])
+                if docs and metas and isinstance(metas[0], dict):
+                    sr = self._result_from_meta(docs[0] or "", metas[0], score=0.1)
+                    extra.append(sr)
+            except Exception as exc:
+                logger.debug("Graph chunk fetch failed for %s: %s", fp, exc)
+
+        logger.debug("Graph expansion: added %d related chunks", len(extra))
+        return results + extra
 
     # ------------------------------------------------------------------
     # RRF
@@ -362,8 +423,6 @@ class FileSearcher:
         from ``file_path`` and parent dir name from the path itself so the
         filter is uniform across both retrieval backends.
         """
-        from pathlib import Path
-
         ext = None
         if extension:
             ext = extension.lower() if extension.startswith(".") else f".{extension.lower()}"

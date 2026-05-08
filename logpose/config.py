@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     auto_index_on_start: bool = False
     "If True, automatically index all corpus_dirs when the server starts."
 
+    # --- Document Graph ----------------------------------------------------
+    graph_enabled: bool = False
+    "Enable document relationship graph for context expansion."
+
     # Derived lists populated by _post_init — treat as read-only.
     _extensions_list: List[str] = []
     _corpus_dirs_list: List[Path] = []
@@ -144,6 +148,10 @@ class Settings(BaseSettings):
     @property
     def bm25_db_path(self) -> Path:
         return self.chroma_dir / "bm25.db"
+
+    @property
+    def graph_db_path(self) -> Path:
+        return self.chroma_dir / "graph.db"
 
     @property
     def ollama_embed_url(self) -> str:

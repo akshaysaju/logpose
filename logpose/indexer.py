@@ -393,10 +393,12 @@ class FileIndexer:
         config: Settings,
         collection: chromadb.Collection,
         bm25_index: Optional[BM25Index] = None,
+        graph=None,  # Optional[DocumentGraph]
     ) -> None:
         self.config = config
         self.collection = collection
         self.bm25_index = bm25_index
+        self.graph = graph
         self._hash_cache: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
