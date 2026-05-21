@@ -3,120 +3,124 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Scroll Into 3D</title>
+<title>Scroll Into 3D — Aether</title>
 <style>
   :root {
-    --accent: #5eead4;
+    --accent:  #5eead4;
     --accent2: #818cf8;
     --accent3: #f472b6;
-    --bg0: #05060f;
-    --bg1: #0b1026;
+    --ink:     #eaf0ff;
+    --muted:   #9aa3d4;
+    --bg0:     #04050d;
+    --bg1:     #0a0f24;
+    --font: "Inter", "SF Pro Display", "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-
   html { scroll-behavior: smooth; }
   body {
-    background: radial-gradient(1200px 800px at 50% -10%, #16204a 0%, var(--bg1) 40%, var(--bg0) 100%);
-    color: #e8ecff;
-    font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+    background: var(--bg0);
+    color: var(--ink);
+    font-family: var(--font);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
     overflow-x: hidden;
   }
 
-  /* The fixed 3D viewport. The page scrolls behind it via .scroll-space. */
+  /* ============ Ambient background (behind the 3D scene) ============ */
+  .aurora {
+    position: fixed; inset: 0; z-index: 0; overflow: hidden;
+    background: radial-gradient(1200px 760px at 50% -12%, #1a2960 0%, var(--bg1) 42%, var(--bg0) 100%);
+  }
+  .aurora::before, .aurora::after {
+    content: ""; position: absolute; width: 60vmax; height: 60vmax; border-radius: 50%;
+    filter: blur(90px); opacity: .55; mix-blend-mode: screen;
+  }
+  .aurora::before {
+    background: radial-gradient(circle, rgba(94,234,212,.55), transparent 62%);
+    top: -18vmax; left: -12vmax; animation: drift1 22s ease-in-out infinite;
+  }
+  .aurora::after {
+    background: radial-gradient(circle, rgba(129,140,248,.5), transparent 62%);
+    bottom: -22vmax; right: -14vmax; animation: drift2 26s ease-in-out infinite;
+  }
+  @keyframes drift1 { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(14vmax,8vmax) scale(1.15)} }
+  @keyframes drift2 { 0%,100%{transform:translate(0,0) scale(1.05)} 50%{transform:translate(-12vmax,-6vmax) scale(.92)} }
+
+  /* ============ The fixed 3D viewport ============ */
   .scene {
-    position: fixed;
-    inset: 0;
-    perspective: 1200px;
-    perspective-origin: 50% 45%;
+    position: fixed; inset: 0; z-index: 1;
+    perspective: 1200px; perspective-origin: 50% 45%;
     overflow: hidden;
-    z-index: 1;
   }
+  .world { position: absolute; left: 50%; top: 50%; transform-style: preserve-3d; will-change: transform; }
 
-  .world {
-    position: absolute;
-    left: 50%;
-    top: 50%;
+  /* Synthwave perspective floor grid (flies toward the viewer) */
+  .grid {
+    position: absolute; left: 50%; top: 50%;
+    width: 5200px; height: 9000px; margin-left: -2600px;
     transform-style: preserve-3d;
-    will-change: transform;
+    transform: translateY(380px) rotateX(83deg);
+    background:
+      linear-gradient(to right,  rgba(94,234,212,.22) 1px, transparent 1px) 0 0 / 92px 92px,
+      linear-gradient(to bottom, rgba(129,140,248,.20) 1px, transparent 1px) 0 0 / 92px 92px;
+    -webkit-mask-image: radial-gradient(ellipse 58% 52% at 50% 30%, #000 8%, transparent 72%);
+            mask-image: radial-gradient(ellipse 58% 52% at 50% 30%, #000 8%, transparent 72%);
+    opacity: .6;
   }
 
-  /* ---- Parallax starfield (generated in JS) ---- */
   .star {
-    position: absolute;
-    width: 3px;
-    height: 3px;
-    border-radius: 50%;
-    background: #fff;
-    box-shadow: 0 0 6px 1px rgba(255,255,255,.7);
+    position: absolute; width: 3px; height: 3px; border-radius: 50%;
+    background: #fff; box-shadow: 0 0 6px 1px rgba(255,255,255,.7);
     transform-style: preserve-3d;
   }
 
-  /* ---- Flythrough panels arranged along the Z axis ---- */
+  /* ============ Flythrough glass panels ============ */
   .panel {
-    position: absolute;
-    left: 50%;
-    top: 50%;
-    width: 440px;
-    min-height: 300px;
-    padding: 34px 36px;
-    border-radius: 22px;
-    background: linear-gradient(160deg, rgba(30,41,90,.62), rgba(12,16,40,.42));
-    border: 1px solid rgba(148,163,255,.32);
-    box-shadow: 0 30px 80px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.08);
-    backdrop-filter: blur(7px);
-    transform-style: preserve-3d;
-    will-change: transform, opacity;
+    position: absolute; left: 50%; top: 50%;
+    width: 460px; min-height: 300px; padding: 36px 38px;
+    border-radius: 24px;
+    background:
+      linear-gradient(160deg, rgba(34,46,98,.66), rgba(10,14,36,.40));
+    border: 1px solid rgba(148,163,255,.30);
+    box-shadow: 0 30px 80px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.10);
+    backdrop-filter: blur(9px) saturate(140%);
+    transform-style: preserve-3d; will-change: transform, opacity;
+  }
+  .panel::before {  /* gradient hairline border accent */
+    content: ""; position: absolute; inset: 0; border-radius: 24px; padding: 1px;
+    background: linear-gradient(140deg, rgba(94,234,212,.7), transparent 40%, rgba(129,140,248,.6));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+            mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+    opacity: .6; pointer-events: none;
   }
   .panel .tag {
-    display: inline-block;
-    font-size: 12px;
-    letter-spacing: .28em;
-    text-transform: uppercase;
-    color: var(--accent);
-    border: 1px solid rgba(94,234,212,.35);
-    border-radius: 999px;
-    padding: 5px 12px;
-    margin-bottom: 18px;
+    display: inline-block; font-size: 11.5px; letter-spacing: .3em; text-transform: uppercase;
+    color: var(--accent); border: 1px solid rgba(94,234,212,.4); border-radius: 999px;
+    padding: 6px 13px; margin-bottom: 20px;
   }
   .panel h2 {
-    font-size: 34px;
-    line-height: 1.1;
-    margin-bottom: 14px;
+    font-size: 36px; line-height: 1.08; letter-spacing: -.02em; margin-bottom: 16px; font-weight: 800;
     background: linear-gradient(92deg, #fff, var(--accent2));
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
+    -webkit-background-clip: text; background-clip: text; color: transparent;
   }
-  .panel p { color: #aab2da; font-size: 16px; line-height: 1.6; }
-  .panel.alt { border-color: rgba(244,114,182,.32); }
-  .panel.alt .tag { color: var(--accent3); border-color: rgba(244,114,182,.4); }
+  .panel p { color: #b3bbe4; font-size: 16px; line-height: 1.62; }
+  .panel p em { color: var(--accent); font-style: normal; }
+  .panel p strong { color: #fff; font-weight: 600; }
+  .panel.alt { border-color: rgba(244,114,182,.30); }
+  .panel.alt::before { background: linear-gradient(140deg, rgba(244,114,182,.7), transparent 40%, rgba(129,140,248,.6)); }
+  .panel.alt .tag { color: var(--accent3); border-color: rgba(244,114,182,.45); }
   .panel.alt h2 { background: linear-gradient(92deg,#fff,var(--accent3)); -webkit-background-clip: text; background-clip: text; }
 
-  /* ---- The rotating hero cube ---- */
-  .cube {
-    position: absolute;
-    left: 50%;
-    top: 50%;
-    width: 200px;
-    height: 200px;
-    margin: -100px 0 0 -100px;
-    transform-style: preserve-3d;
-    will-change: transform;
-  }
+  /* ============ Neon hero cube ============ */
+  .cube { position: absolute; left: 50%; top: 50%; width: 200px; height: 200px; margin: -100px 0 0 -100px; transform-style: preserve-3d; will-change: transform; }
   .face {
-    position: absolute;
-    width: 200px;
-    height: 200px;
-    border: 2px solid rgba(94,234,212,.85);
-    background: rgba(94,234,212,.07);
-    box-shadow: inset 0 0 40px rgba(94,234,212,.25), 0 0 30px rgba(94,234,212,.18);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 58px;
-    font-weight: 700;
-    color: rgba(255,255,255,.9);
-    text-shadow: 0 0 18px rgba(129,140,248,.9);
+    position: absolute; width: 200px; height: 200px;
+    border: 2px solid rgba(94,234,212,.85); background: rgba(94,234,212,.06);
+    box-shadow: inset 0 0 44px rgba(94,234,212,.28), 0 0 34px rgba(94,234,212,.20);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 58px; font-weight: 800; color: rgba(255,255,255,.92);
+    text-shadow: 0 0 20px rgba(129,140,248,.9);
   }
   .face.fr { transform: translateZ(100px); }
   .face.bk { transform: rotateY(180deg) translateZ(100px); }
@@ -125,68 +129,77 @@
   .face.tp { transform: rotateX(90deg)  translateZ(100px); border-color: rgba(244,114,182,.85); }
   .face.bm { transform: rotateX(-90deg) translateZ(100px); border-color: rgba(244,114,182,.85); }
 
-  /* ---- Fixed UI overlays ---- */
-  .hud {
-    position: fixed;
-    z-index: 5;
-    left: 0; right: 0;
-    top: 0;
-    padding: 26px 34px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    pointer-events: none;
-    font-size: 13px;
-    letter-spacing: .22em;
-    text-transform: uppercase;
-    color: #9aa3d4;
-  }
-  .hud .brand { color: #fff; font-weight: 700; }
+  /* ============ Overlays ============ */
+  .vignette { position: fixed; inset: 0; z-index: 4; pointer-events: none;
+    background: radial-gradient(120% 90% at 50% 42%, transparent 52%, rgba(0,0,0,.55) 100%); }
+  .grain { position: fixed; inset: 0; z-index: 5; pointer-events: none; opacity: .05; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
 
-  .progress {
-    position: fixed;
-    z-index: 6;
-    left: 34px; right: 34px; bottom: 26px;
-    height: 3px;
-    background: rgba(255,255,255,.12);
-    border-radius: 3px;
-  }
-  .progress .bar {
-    height: 100%;
-    width: 0%;
-    border-radius: 3px;
+  /* ============ HUD ============ */
+  .hud { position: fixed; z-index: 6; left: 0; right: 0; top: 0; padding: 26px 36px;
+    display: flex; justify-content: space-between; align-items: center; pointer-events: none;
+    font-size: 12.5px; letter-spacing: .24em; text-transform: uppercase; color: var(--muted); }
+  .hud .brand { display: flex; align-items: center; gap: 10px; color: #fff; font-weight: 800; letter-spacing: .18em; }
+  .hud .brand .dot { width: 9px; height: 9px; border-radius: 2px; transform: rotate(45deg);
+    background: linear-gradient(135deg, var(--accent), var(--accent3)); box-shadow: 0 0 12px var(--accent2); }
+  .hud .depth { font-variant-numeric: tabular-nums; }
+
+  /* section nav dots */
+  .nav { position: fixed; z-index: 6; right: 30px; top: 50%; transform: translateY(-50%);
+    display: flex; flex-direction: column; gap: 18px; align-items: flex-end; }
+  .nav .item { display: flex; align-items: center; gap: 12px; color: var(--muted);
+    font-size: 11px; letter-spacing: .22em; text-transform: uppercase; opacity: .45; transition: opacity .35s ease, color .35s ease; }
+  .nav .item .ring { width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid currentColor; position: relative; transition: transform .35s ease; }
+  .nav .item .ring::after { content: ""; position: absolute; inset: 2.5px; border-radius: 50%; background: currentColor; transform: scale(0); transition: transform .35s ease; }
+  .nav .item.active { opacity: 1; color: var(--accent); }
+  .nav .item.active .ring { transform: scale(1.25); box-shadow: 0 0 14px rgba(94,234,212,.7); }
+  .nav .item.active .ring::after { transform: scale(1); }
+  .nav .item .lbl { opacity: 0; transform: translateX(6px); transition: opacity .35s ease, transform .35s ease; }
+  .nav .item.active .lbl { opacity: 1; transform: translateX(0); }
+
+  /* progress bar */
+  .progress { position: fixed; z-index: 6; left: 36px; right: 36px; bottom: 26px; height: 3px;
+    background: rgba(255,255,255,.10); border-radius: 3px; }
+  .progress .bar { height: 100%; width: 0%; border-radius: 3px;
     background: linear-gradient(90deg, var(--accent), var(--accent2), var(--accent3));
-    box-shadow: 0 0 14px rgba(129,140,248,.8);
-  }
+    box-shadow: 0 0 14px rgba(129,140,248,.8); }
 
-  .hint {
-    position: fixed;
-    z-index: 6;
-    left: 50%;
-    bottom: 52px;
-    transform: translateX(-50%);
-    color: #cfd6ff;
-    font-size: 14px;
-    letter-spacing: .3em;
-    text-transform: uppercase;
-    animation: bob 1.8s ease-in-out infinite;
-    transition: opacity .4s ease;
-  }
-  @keyframes bob { 0%,100% { transform: translate(-50%,0); opacity:.5; } 50% { transform: translate(-50%,10px); opacity:1; } }
+  /* scroll hint with animated mouse glyph */
+  .hint { position: fixed; z-index: 6; left: 50%; bottom: 52px; transform: translateX(-50%);
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    color: #cfd6ff; font-size: 11px; letter-spacing: .34em; text-transform: uppercase; transition: opacity .5s ease; }
+  .mouse { width: 24px; height: 38px; border: 2px solid rgba(207,214,255,.7); border-radius: 14px; position: relative; }
+  .mouse::after { content: ""; position: absolute; left: 50%; top: 7px; width: 3px; height: 7px; border-radius: 3px;
+    background: #cfd6ff; transform: translateX(-50%); animation: wheel 1.6s ease-in-out infinite; }
+  @keyframes wheel { 0%{opacity:0;transform:translate(-50%,0)} 30%{opacity:1} 60%{opacity:1;transform:translate(-50%,10px)} 100%{opacity:0;transform:translate(-50%,12px)} }
 
-  /* The tall spacer that gives the page something to scroll through. */
   .scroll-space { position: relative; height: 700vh; z-index: 0; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .aurora::before, .aurora::after, .mouse::after { animation: none; }
+    html { scroll-behavior: auto; }
+  }
 </style>
 </head>
 <body>
 
+  <div class="aurora"></div>
+
   <div class="hud">
-    <span class="brand">◆ AETHER&nbsp;3D</span>
-    <span id="depth">DEPTH 0%</span>
+    <span class="brand"><span class="dot"></span> AETHER&nbsp;3D</span>
+    <span class="depth" id="depth">DEPTH 0%</span>
   </div>
 
-  <div class="scene">
+  <nav class="nav" id="nav">
+    <div class="item"><span class="lbl">Perspective</span><span class="ring"></span></div>
+    <div class="item"><span class="lbl">Parallax</span><span class="ring"></span></div>
+    <div class="item"><span class="lbl">Rotation</span><span class="ring"></span></div>
+    <div class="item"><span class="lbl">Arrival</span><span class="ring"></span></div>
+  </nav>
+
+  <div class="scene" id="scene">
     <div class="world" id="world">
+      <div class="grid"></div>
       <div class="stars" id="stars"></div>
 
       <div class="cube" id="cube">
@@ -198,7 +211,6 @@
         <div class="face bm">✦</div>
       </div>
 
-      <!-- data-z = depth into the scene; data-x / data-y = lateral offset -->
       <section class="panel"     data-z="-700"  data-x="-260" data-y="-40">
         <span class="tag">01 — Perspective</span>
         <h2>Scroll to travel through space</h2>
@@ -214,18 +226,21 @@
       <section class="panel"     data-z="-2600" data-x="-300" data-y="-30">
         <span class="tag">03 — Rotation</span>
         <h2>The world tumbles as you go</h2>
-        <p>The whole scene gently rotates on X and Y while the neon cube spins in the opposite direction — depth cues that only read correctly in true 3D.</p>
+        <p>The whole scene gently rotates on X and Y while the neon cube spins the other way — depth cues that only read correctly in true 3D.</p>
       </section>
 
       <section class="panel alt" data-z="-3500" data-x="0"    data-y="0">
         <span class="tag">04 — Arrival</span>
         <h2>You reached the core</h2>
-        <p>That is a full scroll-driven 3D fly-through built from <strong>perspective</strong>, <strong>preserve-3d</strong> and <strong>translateZ</strong>. Scroll back up to rewind it.</p>
+        <p>A full scroll-driven 3D fly-through built from <strong>perspective</strong>, <strong>preserve-3d</strong> and <strong>translateZ</strong>. Scroll back up to rewind it.</p>
       </section>
     </div>
   </div>
 
-  <div class="hint" id="hint">scroll ↓</div>
+  <div class="vignette"></div>
+  <div class="grain"></div>
+
+  <div class="hint" id="hint"><span class="mouse"></span><span>scroll to explore</span></div>
   <div class="progress"><div class="bar" id="bar"></div></div>
 
   <div class="scroll-space"></div>
@@ -239,69 +254,77 @@
   const depthEl= document.getElementById('depth');
   const hint   = document.getElementById('hint');
   const panels = Array.from(document.querySelectorAll('.panel'));
+  const navItems = Array.from(document.querySelectorAll('.nav .item'));
 
-  // How far the camera travels into the scene over the whole scroll.
-  // Equals the last panel's depth so the journey rests on it, face-on.
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // Camera travel distance == last panel depth, so the journey rests on it.
   const TRAVEL = 3500;
 
-  // --- build the parallax starfield ---
-  const STAR_COUNT = 220;
+  // --- parallax starfield ---
+  const STAR_COUNT = 240;
   for (let i = 0; i < STAR_COUNT; i++) {
     const s = document.createElement('div');
     s.className = 'star';
-    const x = (Math.random() - 0.5) * 2600;
-    const y = (Math.random() - 0.5) * 1700;
-    const z = -Math.random() * 4200;          // scatter through depth
-    const size = 1 + Math.random() * 2.5;
+    const x = (Math.random() - 0.5) * 2800;
+    const y = (Math.random() - 0.5) * 1800;
+    const z = -Math.random() * 4200;
+    const size = 1 + Math.random() * 2.4;
     s.style.width = s.style.height = size + 'px';
     s.style.transform = `translate3d(${x}px, ${y}px, ${z}px)`;
-    s.style.opacity = 0.35 + Math.random() * 0.6;
+    s.style.opacity = (0.35 + Math.random() * 0.6).toFixed(2);
     stars.appendChild(s);
   }
 
-  // place panels in 3D from their data attributes
-  panels.forEach(p => {
-    p.dataset.baseX = p.dataset.x;
-    p.dataset.baseY = p.dataset.y;
-    p.dataset.baseZ = p.dataset.z;
-  });
+  panels.forEach(p => { p.dataset.baseX = p.dataset.x; p.dataset.baseY = p.dataset.y; p.dataset.baseZ = p.dataset.z; });
 
-  let target = 0;   // scroll progress 0..1 (driven by scroll)
-  let curr = 0;     // smoothed progress (driven by rAF)
+  let target = 0, curr = 0;          // scroll progress (raw + smoothed)
+  let mx = 0, my = 0, tmx = 0, tmy = 0;  // mouse parallax (smoothed + raw)
 
   function readScroll() {
     const max = document.documentElement.scrollHeight - window.innerHeight;
     target = max > 0 ? Math.min(1, Math.max(0, window.scrollY / max)) : 0;
-    if (target > 0.02) hint.style.opacity = '0';
-    else hint.style.opacity = '';
+    hint.style.opacity = target > 0.02 ? '0' : '';
+  }
+
+  if (!reduceMotion) {
+    window.addEventListener('pointermove', (e) => {
+      tmx = (e.clientX / window.innerWidth  - 0.5) * 2;
+      tmy = (e.clientY / window.innerHeight - 0.5) * 2;
+    }, { passive: true });
   }
 
   function frame() {
-    // ease the camera toward the scroll target for buttery motion
     curr += (target - curr) * 0.08;
+    mx += (tmx - mx) * 0.06;
+    my += (tmy - my) * 0.06;
 
-    const camZ = curr * TRAVEL;                  // fly forward
-    // Yaw/pitch peak mid-journey and return to face-on at both ends, so the
-    // opening and the final panel are squarely framed.
-    const rotY = Math.sin(curr * Math.PI) * 24;
-    const rotX = Math.sin(curr * Math.PI) * 8;
+    const camZ = curr * TRAVEL;
+    const rotY = Math.sin(curr * Math.PI) * 24 + mx * 5;   // tumble peaks mid-trip + mouse parallax
+    const rotX = Math.sin(curr * Math.PI) * 8  - my * 3;
 
     world.style.transform =
       `translate(-50%, -50%) translateZ(${camZ}px) rotateX(${rotX}deg) rotateY(${rotY}deg)`;
 
-    // the hero cube spins against the camera and recedes
     cube.style.transform =
       `translateZ(${-600 - curr * 200}px) rotateX(${curr * 360}deg) rotateY(${curr * 540}deg)`;
 
-    // fade each panel based on how close it is to the camera plane
-    panels.forEach(p => {
-      const effZ = parseFloat(p.dataset.baseZ) + camZ;   // 0 == at camera
+    let nearest = 0, nearestDist = Infinity;
+    panels.forEach((p, i) => {
+      const effZ = parseFloat(p.dataset.baseZ) + camZ;
       const dist = Math.abs(effZ);
       const opacity = Math.max(0, 1 - dist / 1400);
+      const glow = opacity * (p.classList.contains('alt') ? 1 : 1);
+      const col = p.classList.contains('alt') ? '244,114,182' : '129,140,248';
       p.style.opacity = opacity.toFixed(3);
+      p.style.boxShadow =
+        `0 30px 80px rgba(0,0,0,.55), 0 0 ${(46*glow).toFixed(0)}px rgba(${col},${(0.55*glow).toFixed(2)}), inset 0 1px 0 rgba(255,255,255,.10)`;
       p.style.transform =
         `translate(-50%,-50%) translate3d(${p.dataset.baseX}px, ${p.dataset.baseY}px, ${p.dataset.baseZ}px)`;
+      if (dist < nearestDist) { nearestDist = dist; nearest = i; }
     });
+
+    navItems.forEach((it, i) => it.classList.toggle('active', i === nearest));
 
     bar.style.width = (curr * 100).toFixed(1) + '%';
     depthEl.textContent = 'DEPTH ' + Math.round(curr * 100) + '%';

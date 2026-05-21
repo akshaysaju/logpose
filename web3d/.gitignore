@@ -1,2 +1,5 @@
 shots/
+_vid/
+*.webm
+*.mp4
 __pycache__/
