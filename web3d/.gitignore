@@ -3,4 +3,5 @@ _vid/
 *.webm
 *.mp4
 *.gif
+storyboard.png
 __pycache__/
